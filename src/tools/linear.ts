@@ -1,10 +1,11 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { getEnvValue } from "../server/settings.js";
 
 const LINEAR_API_URL = "https://api.linear.app/graphql";
 
 async function linearRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const apiKey = process.env.LINEAR_API_KEY;
+  const apiKey = getEnvValue("LINEAR_API_KEY");
   if (!apiKey) {
     throw new Error("LINEAR_API_KEY is not set");
   }
@@ -38,7 +39,7 @@ const createLinearTask = tool(
     assigneeId: z.string().optional().describe("Linear user ID to assign the task to"),
   },
   async ({ title, description, teamId, assigneeId }) => {
-    const resolvedTeamId = teamId ?? process.env.LINEAR_TEAM_ID;
+    const resolvedTeamId = teamId ?? getEnvValue("LINEAR_TEAM_ID");
     if (!resolvedTeamId) {
       return {
         content: [
@@ -86,7 +87,7 @@ const listLinearTasks = tool(
     limit: z.number().int().min(1).max(50).default(10).describe("Max number of tasks to return"),
   },
   async ({ teamId, limit }) => {
-    const resolvedTeamId = teamId ?? process.env.LINEAR_TEAM_ID;
+    const resolvedTeamId = teamId ?? getEnvValue("LINEAR_TEAM_ID");
 
     const query = `
       query ListIssues($filter: IssueFilter, $first: Int) {

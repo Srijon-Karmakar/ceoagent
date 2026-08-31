@@ -40,7 +40,7 @@ function buildRecurrence(input: RecurrenceInput): Recurrence | { error: string }
 }
 
 const AGENT_KEY_HINT =
-  '"ceo", or one of: manager, hr, developer, analysis, sales, finance, seo, emails, pr, calendar';
+  '"ceo", or one of: manager, hr, developer, analysis, sales, crm, finance, seo, emails, pr, calendar';
 
 const recurrenceShape = {
   recurrenceType: z.enum(["once", "daily", "weekly"]).describe("How often this fires"),

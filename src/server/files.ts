@@ -5,7 +5,7 @@
 // the browser, with upload as the one write path.
 import { promises as fs } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
-import { WORKSPACE_DIR } from "../workspace.js";
+import { getWorkspaceDir } from "../workspace.js";
 import { getDataDir, getDeliverablesDir } from "../paths.js";
 
 export interface FileRoot {
@@ -17,13 +17,13 @@ export interface FileRoot {
 // The only three real directories the browser can ever resolve into. Every
 // path from the client starts with one of these keys — there is no way to
 // address any other location on disk through this API.
-export const FILE_ROOTS: FileRoot[] = [
-  { key: "data", label: "Company Data", dir: getDataDir() },
-  { key: "deliverables", label: "Deliverables", dir: getDeliverablesDir() },
-  { key: "workspace", label: "Agent Files", dir: WORKSPACE_DIR },
-];
-
-const ROOTS_BY_KEY = new Map(FILE_ROOTS.map((r) => [r.key, r]));
+function fileRoots(): FileRoot[] {
+  return [
+    { key: "data", label: "Company Data", dir: getDataDir() },
+    { key: "deliverables", label: "Deliverables", dir: getDeliverablesDir() },
+    { key: "workspace", label: "Agent Files", dir: getWorkspaceDir() },
+  ];
+}
 
 // Names hidden from the tree everywhere: dotfiles/dotfolders (incl.
 // workspace/.documents, the agent-facing document index — that has its own
@@ -61,7 +61,7 @@ export function resolveVirtualPath(virtualPath: string): ResolvedPath {
 
   const segments = clean.split("/").filter(Boolean);
   const [rootKey, ...rest] = segments;
-  const root = ROOTS_BY_KEY.get(rootKey);
+  const root = new Map(fileRoots().map((r) => [r.key, r])).get(rootKey);
   if (!root) throw new FilesApiError(404, `unknown root: ${rootKey}`);
 
   if (rest.some((s) => s === "." || s === ".." || isHidden(s))) {
@@ -84,7 +84,7 @@ export interface FileEntry {
 }
 
 export function listRoots(): FileEntry[] {
-  return FILE_ROOTS.map((r) => ({
+  return fileRoots().map((r) => ({
     name: r.label,
     path: r.key,
     type: "dir" as const,
@@ -172,6 +172,38 @@ export async function saveUpload(targetVirtualPath: string, originalName: string
     path: `${resolved.root.key}/${[resolved.relPath, finalName].filter(Boolean).join("/")}`,
     type: "file",
     size: written.size,
+    modifiedAt: written.mtime.toISOString(),
+  };
+}
+
+// Same sanitize/dedupe shape as saveUpload above, one level of nesting only
+// (basename strips any "/" the caller tried to smuggle in) — never clobbers
+// an existing folder, appends " (n)" instead.
+export async function createFolder(targetVirtualPath: string, name: string): Promise<FileEntry> {
+  const resolved = resolveVirtualPath(targetVirtualPath);
+  const stat = await fs.stat(resolved.absPath).catch(() => null);
+  if (!stat || !stat.isDirectory()) throw new FilesApiError(400, "target folder does not exist");
+
+  const safeName = basename(name.replace(/\\/g, "/")).trim();
+  if (!safeName || safeName === "." || safeName === ".." || isHidden(safeName)) {
+    throw new FilesApiError(400, `invalid folder name: ${name}`);
+  }
+
+  let finalName = safeName;
+  let n = 1;
+  while (await fs.stat(join(resolved.absPath, finalName)).then(() => true, () => false)) {
+    finalName = `${safeName} (${n})`;
+    n += 1;
+  }
+
+  const destAbs = join(resolved.absPath, finalName);
+  await fs.mkdir(destAbs);
+  const written = await fs.stat(destAbs);
+  return {
+    name: finalName,
+    path: `${resolved.root.key}/${[resolved.relPath, finalName].filter(Boolean).join("/")}`,
+    type: "dir",
+    size: null,
     modifiedAt: written.mtime.toISOString(),
   };
 }

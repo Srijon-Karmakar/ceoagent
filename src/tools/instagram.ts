@@ -3,9 +3,11 @@ import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
+import { getEnvValue } from "../server/settings.js";
 
-const DATA_DIR = getDataDir();
-const TOKEN_FILE = join(DATA_DIR, "instagram-token.json");
+function tokenFile(): string {
+  return join(getDataDir(), "instagram-token.json");
+}
 
 // "Instagram API with Instagram Login" — logs the user into their Instagram
 // professional account directly (no Facebook Page required), which is what
@@ -25,12 +27,13 @@ interface InstagramConnection {
 }
 
 function ensureDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function getConfig() {
-  const appId = process.env.META_APP_ID;
-  const appSecret = process.env.META_APP_SECRET;
+  const appId = getEnvValue("META_APP_ID");
+  const appSecret = getEnvValue("META_APP_SECRET");
   const redirectUri =
     process.env.META_REDIRECT_URI ?? `http://localhost:${process.env.PORT ?? 3000}/auth/instagram/callback`;
   if (!appId || !appSecret) {
@@ -40,14 +43,15 @@ function getConfig() {
 }
 
 export function isInstagramConnected(): boolean {
-  return existsSync(TOKEN_FILE);
+  return existsSync(tokenFile());
 }
 
 export function disconnectInstagram() {
-  if (existsSync(TOKEN_FILE)) unlinkSync(TOKEN_FILE);
+  const file = tokenFile();
+  if (existsSync(file)) unlinkSync(file);
 }
 
-export function getInstagramAuthUrl(): string {
+export function getInstagramAuthUrl(state?: string): string {
   const { appId, redirectUri } = getConfig();
   // Meta's current scope names for this product (the pre-2025 names like
   // instagram_basic/pages_show_list are for the old Pages-based flow and
@@ -65,6 +69,7 @@ export function getInstagramAuthUrl(): string {
     response_type: "code",
     scope,
   });
+  if (state) params.set("state", state);
   return `${AUTHORIZE_URL}?${params.toString()}`;
 }
 
@@ -141,12 +146,12 @@ export async function handleInstagramCallback(code: string): Promise<void> {
 
   const connection: InstagramConnection = { userId: String(shortLived.user_id), accessToken, username, expiresAt };
   ensureDir();
-  writeFileSync(TOKEN_FILE, JSON.stringify(connection, null, 2));
+  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
 }
 
 function getConnection(): InstagramConnection {
   if (!isInstagramConnected()) throw new Error("Instagram is not connected");
-  const connection: InstagramConnection = JSON.parse(readFileSync(TOKEN_FILE, "utf-8"));
+  const connection: InstagramConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
   if (Date.now() > connection.expiresAt) {
     throw new Error("Instagram connection expired — reconnect it from the Accounts page.");
   }

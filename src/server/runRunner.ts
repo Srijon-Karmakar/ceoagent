@@ -1,5 +1,6 @@
 import { runCeoAgent, runSpecialistAgent, type LinearTaskRef } from "../orchestrator.js";
 import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun } from "./store.js";
+import { getEnvValue } from "./settings.js";
 
 // Fires a POST to WEBHOOK_URL (if configured) with the finished run's result,
 // so n8n/Zapier can react without polling. Fire-and-forget: a webhook
@@ -13,7 +14,7 @@ export function notifyWebhook(record: {
   costUsd?: number;
   linearTasks: LinearTaskRef[];
 }) {
-  const url = process.env.WEBHOOK_URL;
+  const url = getEnvValue("WEBHOOK_URL");
   if (!url) return;
   fetch(url, {
     method: "POST",

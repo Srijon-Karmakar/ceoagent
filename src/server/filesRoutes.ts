@@ -3,6 +3,7 @@ import multer from "multer";
 import {
   FilesApiError,
   UPLOAD_LIMITS,
+  createFolder,
   listDirectory,
   resolveVirtualPath,
   saveUpload,
@@ -103,6 +104,24 @@ filesRouter.post("/upload", upload.array("files", UPLOAD_LIMITS.files), async (r
       saved.push(await saveUpload(targetPath, file.originalname, file.buffer));
     }
     res.status(201).json({ entries: saved });
+  } catch (err) {
+    handleFilesError(err, res);
+  }
+});
+
+// --- Mkdir: creates one subfolder inside an existing folder. Never
+// overwrites (createFolder auto-suffixes on a name clash), same as upload.
+
+filesRouter.post("/mkdir", async (req, res) => {
+  const targetPath = typeof req.body?.path === "string" ? req.body.path : "";
+  const name = typeof req.body?.name === "string" ? req.body.name : "";
+  if (!name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  try {
+    const entry = await createFolder(targetPath, name);
+    res.status(201).json({ entry });
   } catch (err) {
     handleFilesError(err, res);
   }

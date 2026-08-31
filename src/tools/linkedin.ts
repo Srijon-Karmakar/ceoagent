@@ -3,9 +3,11 @@ import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
+import { getEnvValue } from "../server/settings.js";
 
-const DATA_DIR = getDataDir();
-const TOKEN_FILE = join(DATA_DIR, "linkedin-token.json");
+function tokenFile(): string {
+  return join(getDataDir(), "linkedin-token.json");
+}
 
 // LinkedIn's REST API is calendar-versioned via this header — LinkedIn ships
 // a new version monthly and only supports the last ~12. Bump this if calls
@@ -22,12 +24,13 @@ interface LinkedinConnection {
 }
 
 function ensureDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function getConfig() {
-  const clientId = process.env.LINKEDIN_CLIENT_ID;
-  const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
+  const clientId = getEnvValue("LINKEDIN_CLIENT_ID");
+  const clientSecret = getEnvValue("LINKEDIN_CLIENT_SECRET");
   const redirectUri =
     process.env.LINKEDIN_REDIRECT_URI ?? `http://localhost:${process.env.PORT ?? 3000}/auth/linkedin/callback`;
   if (!clientId || !clientSecret) {
@@ -37,14 +40,15 @@ function getConfig() {
 }
 
 export function isLinkedinConnected(): boolean {
-  return existsSync(TOKEN_FILE);
+  return existsSync(tokenFile());
 }
 
 export function disconnectLinkedin() {
-  if (existsSync(TOKEN_FILE)) unlinkSync(TOKEN_FILE);
+  const file = tokenFile();
+  if (existsSync(file)) unlinkSync(file);
 }
 
-export function getLinkedinAuthUrl(): string {
+export function getLinkedinAuthUrl(state?: string): string {
   const { clientId, redirectUri } = getConfig();
   // Posting/reading as an ORGANIZATION (Company Page) — not a personal
   // profile. w_organization_social + r_organization_social require the
@@ -57,6 +61,7 @@ export function getLinkedinAuthUrl(): string {
     redirect_uri: redirectUri,
     scope,
   });
+  if (state) params.set("state", state);
   return `https://www.linkedin.com/oauth/v2/authorization?${params.toString()}`;
 }
 
@@ -114,12 +119,12 @@ export async function handleLinkedinCallback(code: string): Promise<void> {
     expiresAt: Date.now() + (tokenJson.expires_in ?? 3600) * 1000,
   };
   ensureDir();
-  writeFileSync(TOKEN_FILE, JSON.stringify(connection, null, 2));
+  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
 }
 
 function getConnection(): LinkedinConnection {
   if (!isLinkedinConnected()) throw new Error("LinkedIn is not connected");
-  const connection: LinkedinConnection = JSON.parse(readFileSync(TOKEN_FILE, "utf-8"));
+  const connection: LinkedinConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
   // LinkedIn's standard OAuth tokens are short-lived (~60 days) with no
   // refresh token in this flow — once expired, reconnecting via the
   // Accounts page is the only way back in, same as a stale Instagram token.

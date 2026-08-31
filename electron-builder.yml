@@ -6,9 +6,9 @@ files:
   - dist/**/*
   - electron/**/*
   - package.json
-# The Claude Agent SDK's Windows build spawns a ~280MB claude.exe helper
-# binary as a subprocess — that needs to be directly executable from disk,
-# not unpacked from a virtual archive on demand.
+# The Claude Agent SDK's Windows build spawns a large claude.exe helper
+# binary as a subprocess. It must be directly executable from disk, not
+# unpacked from a virtual archive on demand.
 asar: false
 win:
   target: nsis
@@ -22,3 +22,4 @@ publish:
   provider: github
   owner: yarrowtech-intern2
   repo: CeoAgent-releases
+  releaseType: release

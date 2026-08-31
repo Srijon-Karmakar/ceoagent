@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { getEnvValue } from "../server/settings.js";
 
 // Deliberately NOT "call any URL the model gives you" — that would make this
 // tool an open SSRF vector for whatever an agent gets talked into (a
@@ -8,7 +9,7 @@ import { z } from "zod";
 // in .env maps a short name to a webhook URL, and the tool only ever accepts
 // one of those names — never a raw URL — as input.
 function loadWorkflows(): Record<string, string> {
-  const raw = process.env.N8N_WORKFLOWS;
+  const raw = getEnvValue("N8N_WORKFLOWS");
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;

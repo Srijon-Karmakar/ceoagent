@@ -3,16 +3,25 @@ import { linearServer, LINEAR_TOOLS } from "./tools/linear.js";
 import { gmailServer, GMAIL_TOOLS, isGmailConnected } from "./tools/gmail.js";
 import { instagramServer, INSTAGRAM_TOOLS, isInstagramConnected } from "./tools/instagram.js";
 import { linkedinServer, LINKEDIN_TOOLS, isLinkedinConnected } from "./tools/linkedin.js";
+import { facebookServer, FACEBOOK_TOOLS, isFacebookConnected } from "./tools/facebook.js";
 import { zernioServer, ZERNIO_TOOLS, isZernioConnected } from "./tools/zernio.js";
+import { postizServer, POSTIZ_TOOLS, isPostizConnected } from "./tools/postiz.js";
+import { scrapegraphServer, SCRAPEGRAPH_TOOLS, isScrapegraphConnected } from "./tools/scrapegraph.js";
+import { hunterServer, HUNTER_TOOLS, isHunterConnected } from "./tools/hunter.js";
+import { canvaServer, CANVA_TOOLS, isCanvaConnected } from "./tools/canva.js";
 import { whatsappServer, WHATSAPP_TOOLS, isWhatsappConnected } from "./tools/whatsapp.js";
 import { n8nServer, N8N_TOOLS, isN8nConnected } from "./tools/n8n.js";
-import { imageGenServer, IMAGE_GEN_TOOLS, isImageGenConfigured } from "./tools/image-gen.js";
+import { imageGenServer, IMAGE_GEN_TOOLS } from "./tools/image-gen.js";
 import { postImagesServer, POST_IMAGES_TOOLS } from "./tools/post-images.js";
 import { schedulerServer } from "./tools/scheduler.js";
+import { redditServer, REDDIT_TOOLS, isRedditConnected } from "./tools/reddit.js";
+import { crmServer } from "./tools/crm.js";
+import { playbookServer } from "./tools/playbook.js";
+import { portfolioServer } from "./tools/portfolio.js";
 import { DEPARTMENTS, buildAgentsRegistry, documentsServer, allSpecialistToolNames } from "./agents.js";
-import { WORKSPACE_DIR } from "./workspace.js";
+import { getWorkspaceDir } from "./workspace.js";
 
-export { WORKSPACE_DIR };
+export { getWorkspaceDir };
 
 function rosterDescription(): string {
   return DEPARTMENTS.map((d) => `- ${d.key} (${d.label}): ${d.tagline}`).join("\n");
@@ -38,14 +47,23 @@ function buildMcpServers() {
     linear: linearServer,
     documents: documentsServer,
     scheduler: schedulerServer,
+    crm: crmServer,
+    playbook: playbookServer,
+    portfolio: portfolioServer,
     ...(isGmailConnected() ? { gmail: gmailServer } : {}),
     ...(isInstagramConnected() ? { instagram: instagramServer } : {}),
     ...(isLinkedinConnected() ? { linkedin: linkedinServer } : {}),
+    ...(isFacebookConnected() ? { facebook: facebookServer } : {}),
     ...(isZernioConnected() ? { zernio: zernioServer } : {}),
+    ...(isPostizConnected() ? { postiz: postizServer } : {}),
+    ...(isScrapegraphConnected() ? { scrapegraph: scrapegraphServer } : {}),
+    ...(isHunterConnected() ? { hunter: hunterServer } : {}),
+    ...(isCanvaConnected() ? { canva: canvaServer } : {}),
     ...(isWhatsappConnected() ? { whatsapp: whatsappServer } : {}),
     ...(isN8nConnected() ? { n8n: n8nServer } : {}),
-    ...(isZernioConnected() && isImageGenConfigured() ? { image_gen: imageGenServer } : {}),
+    ...(isZernioConnected() ? { image_gen: imageGenServer } : {}),
     ...(isZernioConnected() ? { post_images: postImagesServer } : {}),
+    ...(isRedditConnected() ? { reddit: redditServer } : {}),
   };
 }
 
@@ -54,11 +72,17 @@ function allToolNames(): string[] {
   if (isGmailConnected()) for (const t of GMAIL_TOOLS) names.add(t);
   if (isInstagramConnected()) for (const t of INSTAGRAM_TOOLS) names.add(t);
   if (isLinkedinConnected()) for (const t of LINKEDIN_TOOLS) names.add(t);
+  if (isFacebookConnected()) for (const t of FACEBOOK_TOOLS) names.add(t);
   if (isZernioConnected()) for (const t of ZERNIO_TOOLS) names.add(t);
+  if (isPostizConnected()) for (const t of POSTIZ_TOOLS) names.add(t);
+  if (isScrapegraphConnected()) for (const t of SCRAPEGRAPH_TOOLS) names.add(t);
+  if (isHunterConnected()) for (const t of HUNTER_TOOLS) names.add(t);
+  if (isCanvaConnected()) for (const t of CANVA_TOOLS) names.add(t);
   if (isWhatsappConnected()) for (const t of WHATSAPP_TOOLS) names.add(t);
   if (isN8nConnected()) for (const t of N8N_TOOLS) names.add(t);
-  if (isZernioConnected() && isImageGenConfigured()) for (const t of IMAGE_GEN_TOOLS) names.add(t);
+  if (isZernioConnected()) for (const t of IMAGE_GEN_TOOLS) names.add(t);
   if (isZernioConnected()) for (const t of POST_IMAGES_TOOLS) names.add(t);
+  if (isRedditConnected()) for (const t of REDDIT_TOOLS) names.add(t);
   return [...names];
 }
 
@@ -205,7 +229,7 @@ export async function runCeoAgent(goal: string, onEvent: (event: RunEvent) => vo
     prompt: goal,
     options: {
       systemPrompt: { type: "preset", preset: "claude_code", append: CEO_SYSTEM_PROMPT },
-      cwd: WORKSPACE_DIR,
+      cwd: getWorkspaceDir(),
       mcpServers: buildMcpServers(),
       agents: buildAgentsRegistry(),
       // `tools` is a session-wide ceiling, not just the CEO's own toolset — it
@@ -241,7 +265,7 @@ export async function runSpecialistAgent(
     prompt: goal,
     options: {
       agent: agentKey,
-      cwd: WORKSPACE_DIR,
+      cwd: getWorkspaceDir(),
       mcpServers: buildMcpServers(),
       agents: registry,
       tools: agent.tools ?? [],

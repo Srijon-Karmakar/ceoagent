@@ -4,9 +4,11 @@ import { google } from "googleapis";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
+import { getEnvValue } from "../server/settings.js";
 
-const DATA_DIR = getDataDir();
-const TOKEN_FILE = join(DATA_DIR, "gmail-token.json");
+function tokenFile(): string {
+  return join(getDataDir(), "gmail-token.json");
+}
 
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -15,12 +17,13 @@ const SCOPES = [
 ];
 
 function ensureDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function getOAuthClient() {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const clientId = getEnvValue("GOOGLE_CLIENT_ID");
+  const clientSecret = getEnvValue("GOOGLE_CLIENT_SECRET");
   const redirectUri =
     process.env.GOOGLE_REDIRECT_URI ?? `http://localhost:${process.env.PORT ?? 3000}/auth/gmail/callback`;
   if (!clientId || !clientSecret) {
@@ -30,19 +33,21 @@ function getOAuthClient() {
 }
 
 export function isGmailConnected(): boolean {
-  return existsSync(TOKEN_FILE);
+  return existsSync(tokenFile());
 }
 
 export function disconnectGmail() {
-  if (existsSync(TOKEN_FILE)) unlinkSync(TOKEN_FILE);
+  const file = tokenFile();
+  if (existsSync(file)) unlinkSync(file);
 }
 
-export function getGmailAuthUrl(): string {
+export function getGmailAuthUrl(state?: string): string {
   const client = getOAuthClient();
   return client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: SCOPES,
+    state,
   });
 }
 
@@ -50,17 +55,18 @@ export async function handleGmailCallback(code: string): Promise<void> {
   const client = getOAuthClient();
   const { tokens } = await client.getToken(code);
   ensureDir();
-  writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
+  writeFileSync(tokenFile(), JSON.stringify(tokens, null, 2));
 }
 
 function getAuthedClient() {
   if (!isGmailConnected()) throw new Error("Gmail is not connected");
   const client = getOAuthClient();
-  const tokens = JSON.parse(readFileSync(TOKEN_FILE, "utf-8"));
+  const file = tokenFile();
+  const tokens = JSON.parse(readFileSync(file, "utf-8"));
   client.setCredentials(tokens);
   client.on("tokens", (newTokens) => {
     // Persist refreshed access tokens so we don't re-prompt for consent.
-    writeFileSync(TOKEN_FILE, JSON.stringify({ ...tokens, ...newTokens }, null, 2));
+    writeFileSync(file, JSON.stringify({ ...tokens, ...newTokens }, null, 2));
   });
   return google.gmail({ version: "v1", auth: client });
 }
@@ -88,6 +94,17 @@ function buildRawMessage(to: string, subject: string, body: string): string {
     body,
   ].join("\n");
   return Buffer.from(message).toString("base64url");
+}
+
+export async function sendGmailEmail(to: string, subject: string, body: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  try {
+    const gmail = getAuthedClient();
+    const raw = buildRawMessage(to, subject, body);
+    const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    return { ok: true, id: sent.data.id ?? "unknown" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 const listRecentEmails = tool(
@@ -170,11 +187,12 @@ const sendEmail = tool(
     body: z.string().describe("Plain text email body"),
   },
   async ({ to, subject, body }) => {
-    const gmail = getAuthedClient();
-    const raw = buildRawMessage(to, subject, body);
-    const sent = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    const sent = await sendGmailEmail(to, subject, body);
+    if (!sent.ok) {
+      return { content: [{ type: "text" as const, text: `Error sending email: ${sent.error}` }], isError: true };
+    }
     return {
-      content: [{ type: "text" as const, text: `Email sent (id: ${sent.data.id}) to ${to}: "${subject}"` }],
+      content: [{ type: "text" as const, text: `Email sent (id: ${sent.id}) to ${to}: "${subject}"` }],
     };
   },
 );

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getDataDir } from "./paths.js";
+import { getDataDir, runWithTenant } from "./paths.js";
+import { listTenantContexts } from "./server/auth.js";
 
-const DATA_DIR = getDataDir();
-const DATA_FILE = join(DATA_DIR, "schedules.json");
+function dataFile(): string {
+  return join(getDataDir(), "schedules.json");
+}
 
 /**
  * Structured, not a cron string — mirrors the deliberate "allowlist of named
@@ -34,19 +36,26 @@ export interface ScheduleRecord {
   lastRunId?: string;
 }
 
-const schedules = new Map<string, ScheduleRecord>();
+const stores = new Map<string, Map<string, ScheduleRecord>>();
+
+function getStore(): Map<string, ScheduleRecord> {
+  const file = dataFile();
+  const existing = stores.get(file);
+  if (existing) return existing;
+  const schedules = new Map<string, ScheduleRecord>();
+  if (existsSync(file)) {
+    const raw: ScheduleRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+    for (const s of raw) schedules.set(s.id, s);
+  }
+  stores.set(file, schedules);
+  return schedules;
+}
 
 function persist() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(DATA_FILE, JSON.stringify([...schedules.values()], null, 2));
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(dataFile(), JSON.stringify([...getStore().values()], null, 2));
 }
-
-function load() {
-  if (!existsSync(DATA_FILE)) return;
-  const raw: ScheduleRecord[] = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
-  for (const s of raw) schedules.set(s.id, s);
-}
-load();
 
 export interface CreateScheduleInput {
   label: string;
@@ -67,23 +76,23 @@ export function createSchedule(input: CreateScheduleInput): ScheduleRecord {
     enabled: true,
     createdAt: new Date().toISOString(),
   };
-  schedules.set(record.id, record);
+  getStore().set(record.id, record);
   persist();
   return record;
 }
 
 export function listSchedules(): ScheduleRecord[] {
-  return [...schedules.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return [...getStore().values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function getSchedule(id: string): ScheduleRecord | undefined {
-  return schedules.get(id);
+  return getStore().get(id);
 }
 
 export type ScheduleUpdate = Partial<Pick<ScheduleRecord, "label" | "goal" | "agentKey" | "recurrence" | "time" | "enabled">>;
 
 export function updateSchedule(id: string, patch: ScheduleUpdate): ScheduleRecord | undefined {
-  const record = schedules.get(id);
+  const record = getStore().get(id);
   if (!record) return undefined;
   Object.assign(record, patch);
   persist();
@@ -91,6 +100,7 @@ export function updateSchedule(id: string, patch: ScheduleUpdate): ScheduleRecor
 }
 
 export function deleteSchedule(id: string): boolean {
+  const schedules = getStore();
   if (!schedules.has(id)) return false;
   schedules.delete(id);
   persist();
@@ -148,7 +158,7 @@ function tick() {
   if (!runStarters) return;
   const now = new Date();
   const todayStr = todayKey(now);
-  for (const schedule of schedules.values()) {
+  for (const schedule of getStore().values()) {
     if (!schedule.enabled) continue;
     if (schedule.lastFiredDate === todayStr) continue;
     if (!isDueToday(schedule.recurrence, now, todayStr)) continue;
@@ -175,6 +185,9 @@ export function initScheduler(starters: RunStarters) {
   if (ticking) return;
   ticking = true;
   runStarters = starters;
-  tick(); // immediate check covers anything due right at/just after startup, and restart catch-up
-  setInterval(tick, TICK_INTERVAL_MS);
+  const tickAllTenants = () => {
+    for (const tenant of listTenantContexts()) runWithTenant(tenant, tick);
+  };
+  tickAllTenants(); // immediate check covers anything due right at/just after startup, and restart catch-up
+  setInterval(tickAllTenants, TICK_INTERVAL_MS);
 }

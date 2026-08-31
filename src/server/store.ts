@@ -5,9 +5,6 @@ import { join } from "node:path";
 import type { RunEvent, LinearTaskRef } from "../orchestrator.js";
 import { getDataDir } from "../paths.js";
 
-const DATA_DIR = getDataDir();
-const DATA_FILE = join(DATA_DIR, "runs.json");
-
 export interface RunRecord {
   id: string;
   goal: string;
@@ -29,24 +26,38 @@ export interface RunRecord {
   archived?: boolean;
 }
 
-const runs = new Map<string, RunRecord>();
-const emitters = new Map<string, EventEmitter>();
+interface RunStore {
+  runs: Map<string, RunRecord>;
+  emitters: Map<string, EventEmitter>;
+}
+
+const stores = new Map<string, RunStore>();
+
+function dataFile(): string {
+  return join(getDataDir(), "runs.json");
+}
+
+function getStore(): RunStore {
+  const file = dataFile();
+  const existing = stores.get(file);
+  if (existing) return existing;
+  const store: RunStore = { runs: new Map(), emitters: new Map() };
+  if (existsSync(file)) {
+    const raw: RunRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+    for (const r of raw) {
+      if (r.status === "running") r.status = "error";
+      store.runs.set(r.id, r);
+    }
+  }
+  stores.set(file, store);
+  return store;
+}
 
 function persist() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(DATA_FILE, JSON.stringify([...runs.values()], null, 2));
+  const dir = getDataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(dataFile(), JSON.stringify([...getStore().runs.values()], null, 2));
 }
-
-function load() {
-  if (!existsSync(DATA_FILE)) return;
-  const raw: RunRecord[] = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
-  for (const r of raw) {
-    // Any run still "running" when the server last stopped never finished.
-    if (r.status === "running") r.status = "error";
-    runs.set(r.id, r);
-  }
-}
-load();
 
 export function createRun(goal: string, agentKey: string): RunRecord {
   const record: RunRecord = {
@@ -58,8 +69,9 @@ export function createRun(goal: string, agentKey: string): RunRecord {
     events: [],
     linearTasks: [],
   };
-  runs.set(record.id, record);
-  emitters.set(record.id, new EventEmitter().setMaxListeners(50));
+  const store = getStore();
+  store.runs.set(record.id, record);
+  store.emitters.set(record.id, new EventEmitter().setMaxListeners(50));
   persist();
   return record;
 }
@@ -75,6 +87,7 @@ export function createRun(goal: string, agentKey: string): RunRecord {
  * only once the orchestrator's async generator has fully drained.
  */
 export function appendEvent(id: string, event: RunEvent) {
+  const { runs, emitters } = getStore();
   const record = runs.get(id);
   if (!record) return;
   record.events.push(event);
@@ -91,6 +104,7 @@ export function appendEvent(id: string, event: RunEvent) {
  * just the latest turn), and closes out any live SSE subscribers.
  */
 export function finishRun(id: string) {
+  const { runs, emitters } = getStore();
   const record = runs.get(id);
   if (!record) return;
   const doneEvents = record.events.filter((e): e is Extract<RunEvent, { type: "done" }> => e.type === "done");
@@ -111,7 +125,7 @@ export function finishRun(id: string) {
 }
 
 export function setLinearTasks(id: string, tasks: LinearTaskRef[]) {
-  const record = runs.get(id);
+  const record = getStore().runs.get(id);
   if (!record) return;
   record.linearTasks = tasks;
   persist();
@@ -119,7 +133,7 @@ export function setLinearTasks(id: string, tasks: LinearTaskRef[]) {
 
 export function setSessionId(id: string, sessionId: string | undefined) {
   if (!sessionId) return;
-  const record = runs.get(id);
+  const record = getStore().runs.get(id);
   if (!record) return;
   record.sessionId = sessionId;
   persist();
@@ -132,6 +146,7 @@ export function setSessionId(id: string, sessionId: string | undefined) {
  * down, so the run can stream and be finished again normally.
  */
 export function reopenRun(id: string): boolean {
+  const { runs, emitters } = getStore();
   const record = runs.get(id);
   if (!record) return false;
   record.status = "running";
@@ -141,7 +156,7 @@ export function reopenRun(id: string): boolean {
 }
 
 export function archiveRun(id: string): boolean {
-  const record = runs.get(id);
+  const record = getStore().runs.get(id);
   if (!record) return false;
   record.archived = true;
   persist();
@@ -149,7 +164,7 @@ export function archiveRun(id: string): boolean {
 }
 
 export function unarchiveRun(id: string): boolean {
-  const record = runs.get(id);
+  const record = getStore().runs.get(id);
   if (!record) return false;
   record.archived = false;
   persist();
@@ -160,6 +175,7 @@ export function unarchiveRun(id: string): boolean {
  * cost history, and cannot be undone (callers should confirm with the user
  * first). Distinct from archiveRun, which only hides a run reversibly. */
 export function deleteRun(id: string): boolean {
+  const { runs, emitters } = getStore();
   if (!runs.has(id)) return false;
   runs.delete(id);
   emitters.get(id)?.removeAllListeners();
@@ -169,11 +185,11 @@ export function deleteRun(id: string): boolean {
 }
 
 export function getRun(id: string): RunRecord | undefined {
-  return runs.get(id);
+  return getStore().runs.get(id);
 }
 
 export function listRuns(): RunRecord[] {
-  return [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...getStore().runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /**
@@ -191,7 +207,7 @@ export function subscribe(
   onEvent: (e: RunEvent) => void,
   onClose: (finalRecord: RunRecord) => void,
 ) {
-  const emitter = emitters.get(id);
+  const emitter = getStore().emitters.get(id);
   if (!emitter) return () => {};
   emitter.on("event", onEvent);
   emitter.on("close", onClose);

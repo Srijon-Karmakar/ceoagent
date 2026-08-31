@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { WORKSPACE_DIR } from "../workspace.js";
+import { getWorkspaceDir } from "../workspace.js";
 
 // Must live inside WORKSPACE_DIR, not the top-level data/ directory — file
 // writes outside the agent session's cwd silently no-op when made by a
@@ -13,8 +13,13 @@ import { WORKSPACE_DIR } from "../workspace.js";
 // (Developer's built-in Write tool, which writes inside cwd and works fine
 // via delegation) and a non-filesystem comparison (Linear, a network call,
 // also fine via delegation).
-const DOCS_DIR = join(WORKSPACE_DIR, ".documents");
-const INDEX_FILE = join(DOCS_DIR, "index.json");
+function docsDir(): string {
+  return join(getWorkspaceDir(), ".documents");
+}
+
+function indexFile(): string {
+  return join(docsDir(), "index.json");
+}
 
 export interface DocumentRecord {
   id: string;
@@ -30,27 +35,29 @@ export interface DocumentRecord {
 // subagent's tool call was suspected of interfering with whatever channel
 // that subagent uses to report back to the parent process.
 function ensureDirSync() {
-  if (!existsSync(DOCS_DIR)) mkdirSync(DOCS_DIR, { recursive: true });
+  const dir = docsDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function loadIndexSync(): DocumentRecord[] {
   ensureDirSync();
-  if (!existsSync(INDEX_FILE)) return [];
-  return JSON.parse(readFileSync(INDEX_FILE, "utf-8"));
+  const file = indexFile();
+  if (!existsSync(file)) return [];
+  return JSON.parse(readFileSync(file, "utf-8"));
 }
 
 async function loadIndexAsync(): Promise<DocumentRecord[]> {
-  await mkdir(DOCS_DIR, { recursive: true });
+  await mkdir(docsDir(), { recursive: true });
   try {
-    return JSON.parse(await readFile(INDEX_FILE, "utf-8"));
+    return JSON.parse(await readFile(indexFile(), "utf-8"));
   } catch {
     return [];
   }
 }
 
 async function saveIndexAsync(docs: DocumentRecord[]) {
-  await mkdir(DOCS_DIR, { recursive: true });
-  await writeFile(INDEX_FILE, JSON.stringify(docs, null, 2));
+  await mkdir(docsDir(), { recursive: true });
+  await writeFile(indexFile(), JSON.stringify(docs, null, 2));
 }
 
 export function listDocuments(agentKey?: string): DocumentRecord[] {

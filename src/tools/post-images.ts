@@ -8,11 +8,15 @@ import { getDataDir } from "../paths.js";
 
 // A plain folder on disk, not under WORKSPACE_DIR — these files come from the
 // user dropping them in directly (e.g. via Explorer/Finder or a synced
-// drive), not from an agent tool call, so the workspace.ts note about
-// delegated-subagent writes silently no-op'ing outside WORKSPACE_DIR doesn't
-// apply here; this only ever gets read from, never written to, by the agent.
-export const POST_IMAGES_DIR = join(getDataDir(), "post-images");
-if (!existsSync(POST_IMAGES_DIR)) mkdirSync(POST_IMAGES_DIR, { recursive: true });
+// drive) or from image-gen.ts's generate_post_image tool, not from a
+// delegated subagent, so the workspace.ts note about subagent writes
+// silently no-op'ing outside WORKSPACE_DIR doesn't apply here. This module
+// itself only ever reads from the folder, never writes to it.
+export function getPostImagesDir(): string {
+  const dir = join(getDataDir(), "post-images");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 // Instagram only accepts JPEG/PNG (docs.zernio.com/platforms/instagram,
 // checked 2026-08) — filtering here instead of at post time gives a clean
@@ -21,27 +25,28 @@ const ALLOWED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
 const CONTENT_TYPES: Record<string, string> = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png" };
 
 async function ensureDir() {
-  if (!existsSync(POST_IMAGES_DIR)) mkdirSync(POST_IMAGES_DIR, { recursive: true });
+  getPostImagesDir();
 }
 
 const listPostImages = tool(
   "list_post_images",
-  `List image files available to post from the local drop folder (${POST_IMAGES_DIR}). Use this before post_folder_image to see what's there and confirm the filename with the user.`,
+  "List image files available to post from the current organization's local drop folder. Use this before post_folder_image to see what's there and confirm the filename with the user.",
   {},
   async () => {
     await ensureDir();
-    const entries = await readdir(POST_IMAGES_DIR);
+    const postImagesDir = getPostImagesDir();
+    const entries = await readdir(postImagesDir);
     const images = entries.filter((name) => ALLOWED_EXTENSIONS.has(extname(name).toLowerCase()));
     if (!images.length) {
       return {
         content: [
-          { type: "text" as const, text: `No images found. Drop .jpg/.jpeg/.png files into ${POST_IMAGES_DIR} and try again.` },
+          { type: "text" as const, text: `No images found. Drop .jpg/.jpeg/.png files into ${postImagesDir} and try again.` },
         ],
       };
     }
     const lines = await Promise.all(
       images.map(async (name) => {
-        const { size } = await stat(join(POST_IMAGES_DIR, name));
+        const { size } = await stat(join(postImagesDir, name));
         return `- ${name} (${(size / 1024).toFixed(0)} KB)`;
       }),
     );
@@ -69,7 +74,7 @@ const postFolderImage = tool(
     if (!ALLOWED_EXTENSIONS.has(ext)) {
       return { content: [{ type: "text" as const, text: `Unsupported file type "${ext}" — only .jpg/.jpeg/.png are supported.` }], isError: true };
     }
-    const filePath = join(POST_IMAGES_DIR, filename);
+    const filePath = join(getPostImagesDir(), filename);
     if (!existsSync(filePath)) {
       return { content: [{ type: "text" as const, text: `"${filename}" not found in the drop folder — check list_post_images.` }], isError: true };
     }
@@ -77,7 +82,7 @@ const postFolderImage = tool(
     try {
       const buffer = await readFile(filePath);
       const publicUrl = await uploadMediaToZernio(buffer, filename, CONTENT_TYPES[ext]);
-      const { id, status } = await publishZernioPost({ content, platforms, imageUrl: publicUrl });
+      const { id, status } = await publishZernioPost({ content, platforms, media: [{ url: publicUrl, type: "image" }] });
       return {
         content: [
           {
@@ -97,6 +102,6 @@ export const POST_IMAGES_TOOLS = ["mcp__post_images__list_post_images", "mcp__po
 export const postImagesServer = createSdkMcpServer({
   name: "post_images",
   version: "1.0.0",
-  instructions: `Tools for posting images the user has placed in a local drop folder (${POST_IMAGES_DIR}) to connected social platforms via Zernio.`,
+  instructions: "Tools for posting images the user has placed in the current organization's local drop folder to connected social platforms via Zernio.",
   tools: [listPostImages, postFolderImage],
 });

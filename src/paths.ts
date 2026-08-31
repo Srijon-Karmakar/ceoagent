@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -11,14 +12,45 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // from before this helper existed.
 const BASE_DIR = process.env.CEO_AGENT_DATA_DIR ?? join(__dirname, "..");
 
-export function getDataDir(): string {
+export interface TenantContext {
+  userId: string;
+  email: string;
+  name: string;
+  organizationId: string;
+  organizationName: string;
+}
+
+const tenantStorage = new AsyncLocalStorage<TenantContext>();
+
+function safeSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+export function runWithTenant<T>(tenant: TenantContext, fn: () => T): T {
+  return tenantStorage.run(tenant, fn);
+}
+
+export function getTenantContext(): TenantContext | undefined {
+  return tenantStorage.getStore();
+}
+
+export function getBaseDir(): string {
+  const tenant = getTenantContext();
+  return tenant ? join(BASE_DIR, "orgs", safeSegment(tenant.organizationId)) : BASE_DIR;
+}
+
+export function getGlobalDataDir(): string {
   return join(BASE_DIR, "data");
 }
 
+export function getDataDir(): string {
+  return join(getBaseDir(), "data");
+}
+
 export function getWorkspaceDir(): string {
-  return join(BASE_DIR, "workspace");
+  return join(getBaseDir(), "workspace");
 }
 
 export function getDeliverablesDir(): string {
-  return join(BASE_DIR, "deliverables");
+  return join(getBaseDir(), "deliverables");
 }

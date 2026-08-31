@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { getEnvValue } from "../server/settings.js";
 
 // Zernio is a unified API for posting/messaging across many social and
 // messaging platforms (X, Instagram, Facebook, LinkedIn, TikTok, YouTube,
@@ -11,13 +12,13 @@ import { z } from "zod";
 const API_BASE = "https://zernio.com/api/v1";
 
 function getApiKey(): string {
-  const key = process.env.ZERNIO_API_KEY;
+  const key = getEnvValue("ZERNIO_API_KEY");
   if (!key) throw new Error("ZERNIO_API_KEY is not set");
   return key;
 }
 
 export function isZernioConnected(): boolean {
-  return !!process.env.ZERNIO_API_KEY;
+  return !!getEnvValue("ZERNIO_API_KEY");
 }
 
 function zernioHeaders() {
@@ -71,22 +72,27 @@ export async function uploadMediaToZernio(buffer: Buffer, filename: string, cont
   return publicUrl;
 }
 
+interface ZernioMediaItem {
+  url: string;
+  type: "image" | "video";
+}
+
 interface PublishZernioPostArgs {
   content: string;
   platforms: Array<{ platform: string; accountId: string }>;
-  imageUrl?: string;
+  media?: ZernioMediaItem[];
 }
 
 // Shared by the text/image post tool below and by post_folder_image
 // (post-images.ts) so both paths go through one call to POST /posts.
-export async function publishZernioPost({ content, platforms, imageUrl }: PublishZernioPostArgs) {
+export async function publishZernioPost({ content, platforms, media }: PublishZernioPostArgs) {
   const res = await fetch(`${API_BASE}/posts`, {
     method: "POST",
     headers: zernioHeaders(),
     body: JSON.stringify({
       content,
       platforms,
-      mediaItems: imageUrl ? [{ url: imageUrl, type: "image" }] : undefined,
+      mediaItems: media?.length ? media.map((m) => ({ url: m.url, type: m.type })) : undefined,
       publishNow: true,
     }),
   });
@@ -113,7 +119,7 @@ const listZernioAccounts = tool(
 
 const createZernioPost = tool(
   "create_zernio_post",
-  "Publish a post to one or more connected platforms via Zernio, optionally with one image. Irreversible and immediately public once sent — describe the draft (and, if there's an image, the imageUrl to review) back to the user and only call this when explicitly told to post (not just draft). Look up accountId values with list_zernio_accounts first. Instagram in particular requires an image — it has no text-only post type, so pass imageUrl (from generate_image or post_folder_image's preview step) whenever instagram is one of the target platforms.",
+  "Publish a post to one or more connected platforms via Zernio, optionally with media. Irreversible and immediately public once sent — describe the draft (and, if there's media, the URL(s) to review) back to the user and only call this when explicitly told to post (not just draft). Look up accountId values with list_zernio_accounts first. Instagram in particular requires media — it has no text-only post type. Pass multiple `type: \"image\"` entries for a carousel (Instagram allows up to 10), or exactly one `type: \"video\"` entry for a video/Reel post — don't mix image and video entries in the same call, most platforms reject that combination.",
   {
     content: z.string().describe("Post body text"),
     platforms: z
@@ -124,20 +130,27 @@ const createZernioPost = tool(
         }),
       )
       .min(1),
-    imageUrl: z
-      .string()
-      .url()
+    media: z
+      .array(
+        z.object({
+          url: z.string().url().describe("Public media URL, e.g. from generate_image or post_folder_image's preview step"),
+          type: z.enum(["image", "video"]),
+        }),
+      )
+      .max(10)
       .optional()
-      .describe("Public image URL to attach, e.g. from generate_image's preview output. Required for instagram."),
+      .describe(
+        "Media to attach. Multiple image entries = carousel. One video entry = video/Reel post. Required for instagram.",
+      ),
   },
-  async ({ content, platforms, imageUrl }) => {
+  async ({ content, platforms, media }) => {
     try {
-      const { id, status } = await publishZernioPost({ content, platforms, imageUrl });
+      const { id, status } = await publishZernioPost({ content, platforms, media });
       return {
         content: [
           {
             type: "text" as const,
-            text: `Posted via Zernio to ${platforms.map((p) => p.platform).join(", ")}${imageUrl ? " with image" : ""} (post id: ${id}, status: ${status}).`,
+            text: `Posted via Zernio to ${platforms.map((p) => p.platform).join(", ")}${media?.length ? ` with ${media.length} media item(s)` : ""} (post id: ${id}, status: ${status}).`,
           },
         ],
       };
