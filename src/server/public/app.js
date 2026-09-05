@@ -17,6 +17,7 @@ const state = {
   analytics: null,
   logNearBottom: true, // whether the log feed should auto-follow new events
   toolOverrides: new Map(), // toolUseId -> explicit user expand/collapse choice
+  goalExpanded: false, // whether the run-detail header shows the full goal text or a clamped preview
   attachment: null, // { filename, text, truncated } | null — a parsed file pending on the goal form
   attaching: false, // true while an upload is being parsed server-side
   attachError: null, // error message from a failed upload, cleared on next attempt
@@ -45,9 +46,12 @@ const state = {
   portfolioProjects: [], // PortfolioProject[] from /api/portfolio/projects — loaded when the Portfolio view is active
   portfolioActiveProjectId: null, // id of the selected project tab, or null if none exist yet
   portfolioEntries: [], // PortfolioEntry[] for the active project only — reloaded on project switch
-  portfolioCategoryFilter: "blog", // one PortfolioCategory at a time
+  portfolioCategoryFilter: "blog", // one of PORTFOLIO_TABS (a PortfolioCategory, or a PORTFOLIO_NOTE_TABS value) at a time
   portfolioEntryModal: null, // draft object | null — see openPortfolioEntryModal()
   portfolioProjectModal: null, // { mode: "add"|"rename", id?, name, submitting, error } | null
+  portfolioNotes: [], // PortfolioNote[] for the active project only — reloaded on project switch, alongside portfolioEntries
+  portfolioOpenNoteId: null, // id of the note currently drilled into, or null to show the notes list
+  portfolioNoteDraft: null, // { title, content, mode: "preview"|"edit", dirty, saving, error } | null — local edit buffer for the open note
   filesChildren: new Map(), // virtual path ("" = roots) -> FileEntry[] already fetched, so re-expanding a folder is instant
   filesExpanded: new Set(), // virtual paths of folders currently expanded in the tree
   filesSelectedPath: null, // virtual path of the selected file/folder, or null
@@ -223,6 +227,19 @@ const PORTFOLIO_CATEGORY_LABELS = {
   "pr-post": "PR posts",
   email: "Emails",
 };
+
+// Freeform markdown notes — a separate model from PORTFOLIO_CATEGORIES
+// entries above (no link/status/date), rendered as a list of notes you open
+// to read/edit rather than a table. Still shown as tabs alongside the
+// category tabs in the Portfolio toolbar — see PORTFOLIO_TABS below.
+const PORTFOLIO_NOTE_TABS = ["project-details", "database"];
+const PORTFOLIO_NOTE_TAB_LABELS = {
+  "project-details": "Project details",
+  database: "Database",
+};
+
+const PORTFOLIO_TABS = [...PORTFOLIO_CATEGORIES, ...PORTFOLIO_NOTE_TABS];
+const PORTFOLIO_TAB_LABELS = { ...PORTFOLIO_CATEGORY_LABELS, ...PORTFOLIO_NOTE_TAB_LABELS };
 
 const PORTFOLIO_STATUSES = ["draft", "published"];
 const PORTFOLIO_STATUS_LABELS = { draft: "Draft", published: "Published" };
@@ -719,7 +736,7 @@ async function loadPortfolioProjects() {
   if (!state.portfolioProjects.some((p) => p.id === state.portfolioActiveProjectId)) {
     state.portfolioActiveProjectId = state.portfolioProjects[0]?.id ?? null;
   }
-  await loadPortfolioEntries();
+  await Promise.all([loadPortfolioEntries(), loadPortfolioNotes()]);
 }
 
 async function loadPortfolioEntries() {
@@ -728,6 +745,14 @@ async function loadPortfolioEntries() {
     return;
   }
   state.portfolioEntries = await fetchJSON(`/api/portfolio/entries?projectId=${encodeURIComponent(state.portfolioActiveProjectId)}`);
+}
+
+async function loadPortfolioNotes() {
+  if (!state.portfolioActiveProjectId) {
+    state.portfolioNotes = [];
+    return;
+  }
+  state.portfolioNotes = await fetchJSON(`/api/portfolio/notes?projectId=${encodeURIComponent(state.portfolioActiveProjectId)}`);
 }
 
 // ---------- Files view ----------
@@ -830,6 +855,42 @@ function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function deleteFilesEntry(path) {
+  const name = path.split("/").pop();
+  openConfirmModal({
+    title: `Delete "${name}"?`,
+    message: "This permanently removes it from disk. This can't be undone.",
+    confirmLabel: "Delete",
+    danger: true,
+    onConfirm: () => performDeleteFilesEntry(path),
+  });
+}
+
+async function performDeleteFilesEntry(path) {
+  const parentPath = path.split("/").slice(0, -1).join("/");
+  state.filesError = null;
+  try {
+    const res = await fetch(`/api/files/entry?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `delete failed (${res.status})`);
+    }
+    state.filesChildren.delete(path);
+    state.filesExpanded.delete(path);
+    state.filesChildren.delete(parentPath);
+    if (state.filesSelectedPath === path || state.filesSelectedPath?.startsWith(`${path}/`)) {
+      state.filesSelectedPath = null;
+      state.filesSelectedEntry = null;
+      state.filesPreview = null;
+    }
+    await loadFilesDir(parentPath);
+  } catch (err) {
+    state.filesError = err instanceof Error ? err.message : String(err);
+  } finally {
+    render();
+  }
 }
 
 async function uploadFilesToTarget(fileList) {
@@ -941,6 +1002,8 @@ async function switchView(view) {
   state.playbookModal = null;
   state.portfolioEntryModal = null;
   state.portfolioProjectModal = null;
+  state.portfolioOpenNoteId = null;
+  state.portfolioNoteDraft = null;
   render();
   const loaders = [loadRunsForCurrentView(), loadDocumentsForCurrentView()];
   if (view.type === "overview") loaders.push(loadAnalytics());
@@ -979,6 +1042,7 @@ async function selectRun(id) {
   state.sidebarOpen = false;
   state.logNearBottom = true;
   state.toolOverrides = new Map();
+  state.goalExpanded = false;
   const run = await fetchJSON(`/api/runs/${id}`);
   state.selectedRun = run;
   state.liveLinearTasks = [...run.linearTasks];
@@ -1843,7 +1907,7 @@ function renderHeader(mobile) {
           ${renderControlIcon("email.webp", "Emails")}
         </button>
         <button type="button" class="header-date-badge" data-nav='${escapeHtml(JSON.stringify({ type: "department", key: "calendar" }))}' aria-label="Calendar">
-          <span class="header-date-text"><span class="header-date-label">Date</span><span>${todayLabel()}</span></span>
+          <span class="header-date-text"><span class="header-date-label">Date</span><span class="header-date-value">${todayLabel()}</span></span>
           <i data-lucide="calendar"></i>
         </button>
         <div class="header-account">
@@ -2203,7 +2267,14 @@ function renderRunDetail() {
           }
           <button type="button" class="run-action-btn run-action-danger" data-delete-run="${run.id}" data-label="Delete" aria-label="Delete" ${run.status === "running" ? "disabled" : ""}><i data-lucide="trash-2"></i></button>
         </div>
-        <h2>${escapeHtml(run.goal)}</h2>
+        <div class="run-goal-wrap">
+          <h2 class="run-goal${state.goalExpanded ? "" : " collapsed"}">${escapeHtml(run.goal)}</h2>
+          ${
+            run.goal.length > 180
+              ? `<button type="button" class="run-goal-toggle" id="run-goal-toggle">${state.goalExpanded ? "Show less" : "Show more"}</button>`
+              : ""
+          }
+        </div>
         <p class="run-subheader">${escapeHtml(source)} · ${timestamps}</p>
       </header>
 
@@ -2599,6 +2670,10 @@ function renderFilesPreview() {
     .map((seg, i, arr) => (i === arr.length - 1 ? escapeHtml(seg) : `${escapeHtml(seg)} <span class="files-crumb-sep">/</span> `))
     .join("");
 
+  // A root (path has no "/") can't be deleted — it's one of the three fixed
+  // top-level folders, not a real entry on disk to remove.
+  const isRoot = !entry.path.includes("/");
+
   if (entry.type === "dir") {
     const children = state.filesChildren.get(entry.path) ?? [];
     const count = children.length;
@@ -2614,6 +2689,13 @@ function renderFilesPreview() {
           <button type="button" class="files-upload-btn" id="files-upload-btn">
             <i data-lucide="upload"></i> Upload here
           </button>
+          ${
+            isRoot
+              ? ""
+              : `<button type="button" class="files-upload-btn files-delete-btn" id="files-delete-btn" data-files-delete-path="${escapeHtml(entry.path)}">
+                  <i data-lucide="trash-2"></i> Delete
+                </button>`
+          }
         </div>
       </div>
       <div class="files-preview-empty">
@@ -2647,6 +2729,9 @@ function renderFilesPreview() {
           <i data-lucide="upload"></i> Upload here
         </button>
         <a class="files-download-btn" href="${downloadUrl}"><i data-lucide="download"></i> Download</a>
+        <button type="button" class="files-upload-btn files-delete-btn" id="files-delete-btn" data-files-delete-path="${escapeHtml(entry.path)}">
+          <i data-lucide="trash-2"></i> Delete
+        </button>
       </div>
     </div>
     <div class="files-preview-meta">${escapeHtml(meta)}</div>
@@ -2670,7 +2755,7 @@ function renderFilesView() {
             : `<div class="files-row files-loading">Loading…</div>`
         }
       </aside>
-      <div class="files-preview-pane">
+      <div class="files-preview-pane" data-lenis-prevent>
         ${state.filesUploading ? `<div class="files-uploading-banner">Uploading…</div>` : ""}
         ${renderFilesPreview()}
       </div>
@@ -3253,7 +3338,7 @@ function renderKanbanColumn(stage, leads) {
         <span class="kanban-column-title">${LEAD_STAGE_LABELS[stage]}</span>
         <span class="kanban-column-count">${leadsInStage.length}</span>
       </div>
-      <div class="kanban-column-body">
+      <div class="kanban-column-body" data-lenis-prevent>
         ${leadsInStage.map(renderLeadCard).join("") || `<p class="kanban-empty">No leads.</p>`}
       </div>
     </div>
@@ -4227,89 +4312,104 @@ function renderContentCalendarView() {
 // (add/rename/delete via the pencil icon next to the tabs); entries can come
 // from either a human via "Add entry" or an agent via tools/portfolio.ts.
 
-function defaultPortfolioEntryModalDraft() {
+// Entries drill down into a full-width detail pane on click — same
+// preview/edit pattern as the Portfolio notes (see draftFromPortfolioNote
+// below) rather than a small stacked-field popup, since a growing field
+// list (link/status/date/subject/recipient/messageId/notes) reads far
+// better laid out in a real page than crammed into a modal.
+
+function draftFromPortfolioEntry(entry) {
   return {
-    id: null,
-    projectId: state.portfolioActiveProjectId,
-    category: state.portfolioCategoryFilter,
-    title: "",
-    link: "",
-    status: "draft",
-    date: "",
-    notes: "",
-    submitting: false,
-    error: null,
-  };
-}
-
-function openPortfolioEntryModal() {
-  state.portfolioEntryModal = defaultPortfolioEntryModalDraft();
-  render();
-}
-
-function openEditPortfolioEntryModal(entry) {
-  state.portfolioEntryModal = {
-    id: entry.id,
-    projectId: entry.projectId,
     category: entry.category,
     title: entry.title,
     link: entry.link ?? "",
     status: entry.status,
     date: entry.date ?? "",
     notes: entry.notes ?? "",
-    submitting: false,
+    recipient: entry.recipient ?? "",
+    subject: entry.subject ?? "",
+    messageId: entry.messageId ?? "",
+    mode: "preview",
+    dirty: false,
+    saving: false,
     error: null,
   };
+}
+
+function openPortfolioEntryDetail(entry) {
+  state.portfolioOpenEntryId = entry.id;
+  state.portfolioEntryDraft = draftFromPortfolioEntry(entry);
   render();
 }
 
-function closePortfolioEntryModal() {
-  state.portfolioEntryModal = null;
+function closePortfolioEntryDetail() {
+  state.portfolioOpenEntryId = null;
+  state.portfolioEntryDraft = null;
   render();
 }
 
-async function savePortfolioEntryModal() {
-  const form = document.getElementById("portfolio-entry-form");
-  const m = state.portfolioEntryModal;
-  if (!form || !m) return;
-  const title = form.title.value.trim();
+function setPortfolioEntryMode(mode) {
+  if (!state.portfolioEntryDraft) return;
+  state.portfolioEntryDraft.mode = mode;
+  render();
+}
+
+function setPortfolioEntryDraftCategory(category) {
+  if (!state.portfolioEntryDraft) return;
+  state.portfolioEntryDraft.category = category;
+  state.portfolioEntryDraft.dirty = true;
+  render();
+}
+
+async function addPortfolioEntry() {
+  if (!state.portfolioActiveProjectId) return;
+  const entry = await fetchJSON("/api/portfolio/entries", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId: state.portfolioActiveProjectId, category: state.portfolioCategoryFilter, title: "Untitled entry" }),
+  });
+  await loadPortfolioEntries();
+  state.portfolioOpenEntryId = entry.id;
+  state.portfolioEntryDraft = { ...draftFromPortfolioEntry(entry), mode: "edit" };
+  render();
+}
+
+async function savePortfolioEntryDraft() {
+  const draft = state.portfolioEntryDraft;
+  const id = state.portfolioOpenEntryId;
+  if (!draft || !id) return;
+  const title = draft.title.trim();
   if (!title) {
-    m.error = "Title is required.";
+    draft.error = "Title is required.";
     render();
     return;
   }
-  m.error = null;
-  m.submitting = true;
+  draft.error = null;
+  draft.saving = true;
   render();
-  const body = {
-    projectId: m.projectId,
-    category: form.category.value,
-    title,
-    link: form.link.value.trim() || undefined,
-    status: form.status.value,
-    date: form.date.value || undefined,
-    notes: form.notes.value.trim() || undefined,
-  };
   try {
-    if (m.id) {
-      await fetchJSON(`/api/portfolio/entries/${m.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } else {
-      await fetchJSON("/api/portfolio/entries", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    }
+    await fetchJSON(`/api/portfolio/entries/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        category: draft.category,
+        link: draft.link.trim() || undefined,
+        status: draft.status,
+        date: draft.date || undefined,
+        notes: draft.notes.trim() || undefined,
+        recipient: draft.recipient.trim() || undefined,
+        subject: draft.subject.trim() || undefined,
+        messageId: draft.messageId.trim() || undefined,
+      }),
+    });
     await loadPortfolioEntries();
-    state.portfolioEntryModal = null;
+    draft.dirty = false;
+    draft.saving = false;
     render();
   } catch (err) {
-    m.submitting = false;
-    m.error = err instanceof Error ? err.message : String(err);
+    draft.saving = false;
+    draft.error = err instanceof Error ? err.message : String(err);
     render();
   }
 }
@@ -4326,20 +4426,164 @@ function deletePortfolioEntry(id) {
 
 async function performDeletePortfolioEntry(id) {
   await fetchJSON(`/api/portfolio/entries/${id}`, { method: "DELETE" });
-  if (state.portfolioEntryModal?.id === id) state.portfolioEntryModal = null;
+  if (state.portfolioOpenEntryId === id) {
+    state.portfolioOpenEntryId = null;
+    state.portfolioEntryDraft = null;
+  }
   await loadPortfolioEntries();
   render();
 }
 
+const PORTFOLIO_ENTRY_CSV_COLUMNS = [
+  "title",
+  "category",
+  "status",
+  "date",
+  "subject",
+  "recipient",
+  "messageId",
+  "link",
+  "notes",
+  "owner",
+  "agentKey",
+  "createdAt",
+];
+
+function portfolioEntriesToCSV(entries) {
+  const header = PORTFOLIO_ENTRY_CSV_COLUMNS.join(",");
+  const lines = entries.map((e) => PORTFOLIO_ENTRY_CSV_COLUMNS.map((col) => csvEscape(e[col])).join(","));
+  return [header, ...lines].join("\n");
+}
+
+function exportPortfolioEntriesCSV() {
+  const project = state.portfolioProjects.find((p) => p.id === state.portfolioActiveProjectId);
+  const entries = state.portfolioEntries.filter((e) => e.category === state.portfolioCategoryFilter);
+  if (!entries.length) return;
+  const csv = portfolioEntriesToCSV(entries);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${(project?.name ?? "portfolio").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${state.portfolioCategoryFilter}-${ymd(new Date())}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function setPortfolioActiveProject(id) {
   state.portfolioActiveProjectId = id;
+  state.portfolioOpenNoteId = null;
+  state.portfolioNoteDraft = null;
   render();
-  await loadPortfolioEntries();
+  await Promise.all([loadPortfolioEntries(), loadPortfolioNotes()]);
   render();
 }
 
 function setPortfolioCategoryFilter(category) {
   state.portfolioCategoryFilter = category;
+  state.portfolioOpenNoteId = null;
+  state.portfolioNoteDraft = null;
+  render();
+}
+
+function draftFromPortfolioNote(note) {
+  return { title: note.title, content: note.content, mode: "preview", dirty: false, saving: false, error: null, copied: false };
+}
+
+function openPortfolioNote(id) {
+  const note = state.portfolioNotes.find((n) => n.id === id);
+  if (!note) return;
+  state.portfolioOpenNoteId = id;
+  state.portfolioNoteDraft = draftFromPortfolioNote(note);
+  render();
+}
+
+function closePortfolioNote() {
+  state.portfolioOpenNoteId = null;
+  state.portfolioNoteDraft = null;
+  render();
+}
+
+function setPortfolioNoteMode(mode) {
+  if (!state.portfolioNoteDraft) return;
+  state.portfolioNoteDraft.mode = mode;
+  render();
+}
+
+async function addPortfolioNote() {
+  if (!state.portfolioActiveProjectId) return;
+  const note = await fetchJSON("/api/portfolio/notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId: state.portfolioActiveProjectId, tab: state.portfolioCategoryFilter, title: "Untitled note", content: "" }),
+  });
+  await loadPortfolioNotes();
+  state.portfolioOpenNoteId = note.id;
+  state.portfolioNoteDraft = { ...draftFromPortfolioNote(note), mode: "edit" };
+  render();
+}
+
+async function savePortfolioNoteDraft() {
+  const draft = state.portfolioNoteDraft;
+  const id = state.portfolioOpenNoteId;
+  if (!draft || !id) return;
+  draft.error = null;
+  draft.saving = true;
+  render();
+  try {
+    await fetchJSON(`/api/portfolio/notes/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: draft.title.trim() || "Untitled note", content: draft.content }),
+    });
+    await loadPortfolioNotes();
+    draft.dirty = false;
+    draft.saving = false;
+    render();
+  } catch (err) {
+    draft.saving = false;
+    draft.error = err instanceof Error ? err.message : String(err);
+    render();
+  }
+}
+
+async function copyPortfolioNoteContent() {
+  const draft = state.portfolioNoteDraft;
+  if (!draft) return;
+  try {
+    await navigator.clipboard.writeText(draft.content);
+    draft.copied = true;
+    render();
+    setTimeout(() => {
+      if (state.portfolioNoteDraft === draft) {
+        draft.copied = false;
+        render();
+      }
+    }, 1500);
+  } catch {
+    draft.error = "Couldn't copy — your browser blocked clipboard access.";
+    render();
+  }
+}
+
+function deletePortfolioNote(id) {
+  openConfirmModal({
+    title: "Delete this note?",
+    message: "This can't be undone.",
+    confirmLabel: "Delete",
+    danger: true,
+    onConfirm: () => performDeletePortfolioNote(id),
+  });
+}
+
+async function performDeletePortfolioNote(id) {
+  await fetchJSON(`/api/portfolio/notes/${id}`, { method: "DELETE" });
+  if (state.portfolioOpenNoteId === id) {
+    state.portfolioOpenNoteId = null;
+    state.portfolioNoteDraft = null;
+  }
+  await loadPortfolioNotes();
   render();
 }
 
@@ -4430,15 +4674,15 @@ function renderPortfolioProjectTabs() {
 function renderPortfolioCategoryTabs() {
   return `
     <div class="section-tabs">
-      ${PORTFOLIO_CATEGORIES.map(
+      ${PORTFOLIO_TABS.map(
         (c) =>
-          `<button type="button" class="section-tab${c === state.portfolioCategoryFilter ? " active" : ""}" data-portfolio-category="${c}">${PORTFOLIO_CATEGORY_LABELS[c]}</button>`,
+          `<button type="button" class="section-tab${c === state.portfolioCategoryFilter ? " active" : ""}" data-portfolio-category="${c}">${PORTFOLIO_TAB_LABELS[c]}</button>`,
       ).join("")}
     </div>
   `;
 }
 
-function renderPortfolioEntryRow(entry) {
+function renderPortfolioEntryRow(entry, isEmailTab) {
   return `
     <tr class="portfolio-row" data-open-portfolio-entry="${entry.id}">
       <td>${
@@ -4446,6 +4690,15 @@ function renderPortfolioEntryRow(entry) {
           ? `<a href="${escapeHtml(entry.link)}" target="_blank" rel="noopener noreferrer" class="portfolio-link">${escapeHtml(entry.title)} ↗</a>`
           : escapeHtml(entry.title)
       }</td>
+      ${
+        isEmailTab
+          ? `
+      <td class="portfolio-text-cell">${entry.subject ? escapeHtml(entry.subject) : "—"}</td>
+      <td class="portfolio-text-cell">${entry.recipient ? escapeHtml(entry.recipient) : "—"}</td>
+      <td class="portfolio-text-cell">${entry.messageId ? escapeHtml(entry.messageId) : "—"}</td>
+      `
+          : ""
+      }
       <td><span class="portfolio-status-badge portfolio-status-${entry.status}">${PORTFOLIO_STATUS_LABELS[entry.status]}</span></td>
       <td class="portfolio-date-cell">${entry.date ?? "—"}</td>
       <td class="portfolio-text-cell">${entry.notes ? escapeHtml(entry.notes) : "—"}</td>
@@ -4464,8 +4717,12 @@ function renderPortfolioEntryRow(entry) {
 
 function renderPortfolioView() {
   const project = state.portfolioProjects.find((p) => p.id === state.portfolioActiveProjectId);
-  const entries = state.portfolioEntries.filter((e) => e.category === state.portfolioCategoryFilter);
-  const categoryLabel = PORTFOLIO_CATEGORY_LABELS[state.portfolioCategoryFilter].toLowerCase();
+  const isNoteTab = PORTFOLIO_NOTE_TABS.includes(state.portfolioCategoryFilter);
+  const isEmailTab = state.portfolioCategoryFilter === "email";
+  const entries = isNoteTab ? [] : state.portfolioEntries.filter((e) => e.category === state.portfolioCategoryFilter);
+  const notes = isNoteTab ? state.portfolioNotes.filter((n) => n.tab === state.portfolioCategoryFilter) : [];
+  const categoryLabel = PORTFOLIO_TAB_LABELS[state.portfolioCategoryFilter].toLowerCase();
+  const openNote = isNoteTab ? notes.find((n) => n.id === state.portfolioOpenNoteId) : null;
 
   return `
     <div class="portfolio-view">
@@ -4476,7 +4733,7 @@ function renderPortfolioView() {
       </div>
       ${
         !state.portfolioProjects.length
-          ? `<div class="empty-state"><p>No projects yet — add one to start tracking blogs, articles, collabs, PR posts, and emails against it.</p></div>`
+          ? `<div class="empty-state"><p>No projects yet — add one to start tracking blogs, articles, collabs, PR posts, emails, project details, and database entries against it.</p></div>`
           : `
         <div class="portfolio-toolbar">
           ${renderPortfolioProjectTabs()}
@@ -4484,17 +4741,31 @@ function renderPortfolioView() {
         </div>
         <div class="portfolio-toolbar">
           ${renderPortfolioCategoryTabs()}
-          <span class="section-count">${entries.length} ${categoryLabel}</span>
-          <button type="button" class="ai-button" id="portfolio-add-entry"><i data-lucide="plus"></i> Add entry</button>
+          ${
+            !openNote
+              ? `
+            <div class="portfolio-toolbar-actions">
+              <span class="section-count">${isNoteTab ? notes.length : entries.length} ${categoryLabel}</span>
+              ${!isNoteTab ? `<button type="button" class="ai-button ai-button-secondary" id="portfolio-export-csv" ${entries.length ? "" : "disabled"}><i data-lucide="download"></i> Export CSV</button>` : ""}
+              <button type="button" class="ai-button" id="${isNoteTab ? "portfolio-add-note" : "portfolio-add-entry"}"><i data-lucide="plus"></i> ${isNoteTab ? "Add note" : "Add entry"}</button>
+            </div>
+          `
+              : ""
+          }
         </div>
         ${
-          entries.length
-            ? `
+          isNoteTab
+            ? openNote
+              ? renderPortfolioNoteDetail(openNote)
+              : renderPortfolioNotesList(notes, categoryLabel)
+            : entries.length
+              ? `
           <div class="portfolio-table-wrap" data-lenis-prevent>
             <table class="portfolio-table">
               <thead>
                 <tr>
                   <th>Title</th>
+                  ${isEmailTab ? `<th>Subject</th><th>Recipient</th><th>Message ID</th>` : ""}
                   <th>Status</th>
                   <th>Date</th>
                   <th>Notes</th>
@@ -4502,16 +4773,96 @@ function renderPortfolioView() {
                   <th></th>
                 </tr>
               </thead>
-              <tbody>${entries.map(renderPortfolioEntryRow).join("")}</tbody>
+              <tbody>${entries.map((entry) => renderPortfolioEntryRow(entry, isEmailTab)).join("")}</tbody>
             </table>
           </div>`
-            : `<div class="empty-state"><p>No ${categoryLabel} logged for this project yet.</p></div>`
+              : `<div class="empty-state"><p>No ${categoryLabel} logged for this project yet.</p></div>`
         }
       `
       }
     </div>
     ${renderPortfolioEntryModal()}
     ${renderPortfolioProjectModal()}
+  `;
+}
+
+function renderPortfolioNotesList(notes, categoryLabel) {
+  if (!notes.length) {
+    return `<div class="empty-state"><p>No ${categoryLabel} yet — add one and paste in markdown text. It's saved as-is, plain and copyable, and stays until you delete it.</p></div>`;
+  }
+  return `
+    <div class="portfolio-notes-list">
+      ${notes
+        .map(
+          (note) => `
+        <div class="portfolio-note-card" data-open-portfolio-note="${note.id}">
+          <div class="portfolio-note-card-body">
+            <div class="portfolio-note-card-head">
+              <span class="portfolio-note-card-title">${escapeHtml(note.title || "Untitled note")}</span>
+              ${
+                note.owner === "agent"
+                  ? `<span class="portfolio-owner-badge agent">${escapeHtml(note.agentKey ?? "agent")}</span>`
+                  : `<span class="portfolio-owner-badge manual">Manual</span>`
+              }
+            </div>
+            <p class="portfolio-note-card-preview">${note.content ? escapeHtml(note.content.slice(0, 180)) : "Empty note"}</p>
+            <span class="portfolio-note-card-meta">Updated ${formatPortfolioNoteTimestamp(note.updatedAt)}</span>
+          </div>
+          <button type="button" class="run-action-icon run-action-danger" data-delete-portfolio-note="${note.id}" aria-label="Delete note"><i data-lucide="trash-2"></i></button>
+        </div>
+      `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function formatPortfolioNoteTimestamp(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderPortfolioNoteDetail(note) {
+  const draft = state.portfolioNoteDraft;
+  if (!draft) return "";
+  const mode = draft.mode === "edit" ? "edit" : "preview";
+  return `
+    <div class="portfolio-note-detail">
+      <div class="portfolio-note-detail-head">
+        <button type="button" class="run-action-icon" id="portfolio-note-back" aria-label="Back to notes"><i data-lucide="arrow-left"></i></button>
+        <input type="text" class="portfolio-note-title-input" id="portfolio-note-title-input" value="${escapeHtml(draft.title)}" placeholder="Untitled note" />
+        <div class="portfolio-note-detail-actions">
+          <div class="segmented-toggle">
+            <button type="button" class="segmented-toggle-btn${mode === "preview" ? " active" : ""}" data-portfolio-note-mode="preview">Preview</button>
+            <button type="button" class="segmented-toggle-btn${mode === "edit" ? " active" : ""}" data-portfolio-note-mode="edit">Edit</button>
+          </div>
+          <button type="button" class="run-action-icon" id="portfolio-note-copy" aria-label="Copy markdown"><i data-lucide="copy"></i></button>
+          <button type="button" class="run-action-icon run-action-danger" id="portfolio-note-delete" aria-label="Delete note"><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>
+      <div class="portfolio-note-meta">
+        Updated ${formatPortfolioNoteTimestamp(note.updatedAt)}
+        ${
+          note.owner === "agent"
+            ? `· <span class="portfolio-owner-badge agent">${escapeHtml(note.agentKey ?? "agent")}</span>`
+            : `· <span class="portfolio-owner-badge manual">Manual</span>`
+        }
+      </div>
+      ${
+        mode === "edit"
+          ? `<textarea class="portfolio-note-editor" id="portfolio-note-content-input" placeholder="Write or paste markdown here…" data-lenis-prevent>${escapeHtml(draft.content)}</textarea>`
+          : draft.content
+            ? `<div class="portfolio-note-preview msg-text" data-lenis-prevent>${renderMarkdown(draft.content)}</div>`
+            : `<div class="empty-state"><p>Empty — click Edit to write or paste markdown.</p></div>`
+      }
+      <div class="portfolio-note-detail-footer">
+        ${draft.error ? `<p class="attachment-error">${escapeHtml(draft.error)}</p>` : ""}
+        ${draft.copied ? `<span class="portfolio-note-copied">Copied ✓</span>` : ""}
+        <button type="button" class="confirm-btn confirm-btn-primary" id="portfolio-note-save" ${!draft.dirty || draft.saving ? "disabled" : ""}>${draft.saving ? "Saving…" : "Save"}</button>
+      </div>
+    </div>
   `;
 }
 
@@ -4533,6 +4884,9 @@ function renderPortfolioEntryModal() {
             <select name="status">${PORTFOLIO_STATUSES.map((s) => `<option value="${s}"${s === m.status ? " selected" : ""}>${PORTFOLIO_STATUS_LABELS[s]}</option>`).join("")}</select>
           </label>
           <label class="field-label">Date<input type="date" name="date" value="${m.date}" /></label>
+          <label class="field-label">Subject<input type="text" name="subject" value="${escapeHtml(m.subject)}" placeholder="Only relevant for Emails" /></label>
+          <label class="field-label">Recipient<input type="text" name="recipient" value="${escapeHtml(m.recipient)}" placeholder="name@example.com — only relevant for Emails" /></label>
+          <label class="field-label">Message ID<input type="text" name="messageId" value="${escapeHtml(m.messageId)}" placeholder="Gmail message id — only relevant for Emails" /></label>
           <label class="field-label">Notes<textarea name="notes" rows="3">${escapeHtml(m.notes)}</textarea></label>
           ${m.error ? `<p class="attachment-error">${escapeHtml(m.error)}</p>` : ""}
           <div class="confirm-modal-actions">
@@ -4607,6 +4961,10 @@ function attachHandlers() {
       deleteRun(btn.dataset.deleteRun);
     });
   });
+  document.getElementById("run-goal-toggle")?.addEventListener("click", () => {
+    state.goalExpanded = !state.goalExpanded;
+    render();
+  });
 
   if (state.confirmModal) {
     document.getElementById("confirm-backdrop")?.addEventListener("click", (e) => {
@@ -4674,6 +5032,10 @@ function attachHandlers() {
   document.getElementById("files-new-folder-btn")?.addEventListener("click", () => {
     const target = state.filesUploadTarget || state.filesSelectedPath;
     if (target) openNewFolderModal(target);
+  });
+  document.getElementById("files-delete-btn")?.addEventListener("click", (e) => {
+    const path = e.currentTarget.dataset.filesDeletePath;
+    if (path) deleteFilesEntry(path);
   });
 
   if (state.folderModal) {
@@ -4890,6 +5252,7 @@ function attachHandlers() {
 
   document.getElementById("portfolio-add-project")?.addEventListener("click", () => openAddPortfolioProjectModal());
   document.getElementById("portfolio-add-entry")?.addEventListener("click", () => openPortfolioEntryModal());
+  document.getElementById("portfolio-export-csv")?.addEventListener("click", () => exportPortfolioEntriesCSV());
   document.getElementById("portfolio-edit-project")?.addEventListener("click", () => {
     const project = state.portfolioProjects.find((p) => p.id === state.portfolioActiveProjectId);
     if (project) openRenamePortfolioProjectModal(project);
@@ -4930,6 +5293,49 @@ function attachHandlers() {
     document.getElementById("portfolio-project-form")?.addEventListener("submit", (e) => {
       e.preventDefault();
       savePortfolioProjectModal();
+    });
+  }
+
+  // --- Portfolio notes (project-details/database tabs) ---
+
+  document.getElementById("portfolio-add-note")?.addEventListener("click", () => addPortfolioNote());
+
+  document.querySelectorAll("[data-open-portfolio-note]").forEach((el) => {
+    el.addEventListener("click", () => openPortfolioNote(el.dataset.openPortfolioNote));
+  });
+
+  document.querySelectorAll("[data-delete-portfolio-note]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deletePortfolioNote(btn.dataset.deletePortfolioNote);
+    });
+  });
+
+  if (state.portfolioNoteDraft) {
+    document.getElementById("portfolio-note-back")?.addEventListener("click", () => closePortfolioNote());
+    document.getElementById("portfolio-note-copy")?.addEventListener("click", () => copyPortfolioNoteContent());
+    document.getElementById("portfolio-note-delete")?.addEventListener("click", () => deletePortfolioNote(state.portfolioOpenNoteId));
+    document.getElementById("portfolio-note-save")?.addEventListener("click", () => savePortfolioNoteDraft());
+
+    document.querySelectorAll("[data-portfolio-note-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => setPortfolioNoteMode(btn.dataset.portfolioNoteMode));
+    });
+
+    // Update the draft directly on each keystroke instead of calling render() —
+    // a full re-render would tear down and rebuild the input/textarea,
+    // dropping focus and cursor position mid-type.
+    const titleInput = document.getElementById("portfolio-note-title-input");
+    titleInput?.addEventListener("input", () => {
+      state.portfolioNoteDraft.title = titleInput.value;
+      state.portfolioNoteDraft.dirty = true;
+      document.getElementById("portfolio-note-save")?.removeAttribute("disabled");
+    });
+
+    const contentInput = document.getElementById("portfolio-note-content-input");
+    contentInput?.addEventListener("input", () => {
+      state.portfolioNoteDraft.content = contentInput.value;
+      state.portfolioNoteDraft.dirty = true;
+      document.getElementById("portfolio-note-save")?.removeAttribute("disabled");
     });
   }
 

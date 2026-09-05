@@ -211,13 +211,29 @@ export async function readRequestTenant(req: express.Request): Promise<TenantCon
   return tenantForUser(await verifyAccessToken(token));
 }
 
+declare global {
+  namespace Express {
+    interface Request {
+      // Stashed by requireAuth alongside the AsyncLocalStorage context (see
+      // restoreTenant below) since multer's multipart parsing runs the rest
+      // of the middleware chain outside that context — it isn't a plain
+      // Promise continuation, so Node's async-context propagation doesn't
+      // carry it through busboy's stream handling.
+      tenant?: TenantContext;
+    }
+  }
+}
+
 export function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (req.originalUrl.startsWith("/api/automation/")) {
     next();
     return;
   }
   readRequestTenant(req)
-    .then((tenant) => runWithTenant(tenant, next))
+    .then((tenant) => {
+      req.tenant = tenant;
+      runWithTenant(tenant, next);
+    })
     .catch(() => {
       if (req.path.startsWith("/api/")) {
         res.status(401).json({ error: "authentication required" });
@@ -225,6 +241,21 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
       }
       res.redirect("/");
     });
+}
+
+// Re-establishes the tenant AsyncLocalStorage context after a multer upload
+// middleware, which loses it (see the Request.tenant comment above). Mount
+// this right after `upload.single(...)`/`upload.array(...)` on any route
+// whose handler resolves tenant-scoped storage (getDataDir/getWorkspaceDir/
+// etc.) — otherwise those calls silently fall back to the untenanted base
+// dir instead of throwing, so the bug shows up as "not found" errors on
+// paths that plainly exist.
+export function restoreTenant(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.tenant) {
+    runWithTenant(req.tenant, next);
+  } else {
+    next();
+  }
 }
 
 export function requireAutomationTenant(req: express.Request, res: express.Response, next: express.NextFunction) {

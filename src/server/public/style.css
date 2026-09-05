@@ -1969,6 +1969,41 @@ button:disabled {
   color: var(--text-muted);
 }
 
+/* Lets the goal <h2> and its toggle button act as direct flex items of
+   .run-header (so the existing order/flex rules on ".run-header h2" above
+   keep positioning it correctly) while still giving them a shared DOM
+   parent to render from. */
+.run-goal-wrap {
+  display: contents;
+}
+
+.run-goal.collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.run-goal-toggle {
+  order: 3;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 2px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .run-goal-toggle:hover {
+    text-decoration: underline;
+  }
+}
+
 .run-actions {
   display: flex;
   align-items: center;
@@ -2849,10 +2884,20 @@ button:disabled {
   color: white;
 }
 
+.files-delete-btn {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
+}
+
 @media (hover: hover) {
   .files-upload-btn:hover,
   .files-download-btn:hover {
     filter: brightness(0.96);
+  }
+
+  .files-delete-btn:hover {
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+    filter: none;
   }
 }
 
@@ -2942,15 +2987,11 @@ button:disabled {
   font-size: 12.5px;
   line-height: 1.5;
   margin: 0;
-  max-height: 60vh;
-  overflow-y: auto;
 }
 
 .files-preview-doc {
   font-size: 14px;
   line-height: 1.6;
-  max-height: 60vh;
-  overflow-y: auto;
 }
 
 @media (min-width: 720px) {
@@ -3665,6 +3706,34 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* .content-area clips overflow at desktop widths (the app-shell layout —
+     see .content-area's `overflow: hidden` above 720px) so a column with
+     more cards than fit on screen was simply cut off with no way to reach
+     the rest: no page-level vertical scroll to fall back on, only this
+     board's own `overflow-x` on .kanban-board. Cap each column's own body
+     and let it scroll independently, Trello-style, so the column header/
+     count stays pinned while its card list scrolls. */
+  max-height: 60vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-faint) transparent;
+}
+
+.kanban-column-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.kanban-column-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.kanban-column-body::-webkit-scrollbar-thumb {
+  background: var(--text-faint);
+  border-radius: 999px;
+}
+
+.kanban-column-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 .kanban-empty {
@@ -4607,6 +4676,58 @@ html[data-theme="dark"] .playbook-menu-popover {
   margin-bottom: var(--space-2);
 }
 
+/* .ai-button defaults to width:100% (fine where its only flex sibling is a
+   small label, e.g. .section-head), but .portfolio-toolbar carries a whole
+   row of category tabs before it — without a width override here the
+   button demanded ~100% of the row's own hypothetical size and either blew
+   up into a full-width bar or, once a second button was added, starved its
+   sibling down to a sliver. Same fix as .section-head .ai-button, plus a
+   dedicated group so the count/buttons wrap onto their own line as a unit
+   instead of one button wrapping while the other gets crushed in place. */
+.portfolio-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.portfolio-toolbar-actions .ai-button {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  height: 28px;
+  font-size: 12px;
+}
+
+/* A quieter sibling to .ai-button (which reserves its animated gradient
+   border for the primary "create" action) — same size/shape, flat surface,
+   for a secondary action like exporting rather than authoring something new. */
+.ai-button-secondary {
+  width: auto;
+  background: var(--bg-alt);
+  border-color: var(--border);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.ai-button-secondary::before {
+  display: none;
+}
+
+@media (hover: hover) {
+  .ai-button-secondary:hover:not(:disabled) {
+    transform: none;
+    filter: brightness(0.96);
+    box-shadow: none;
+  }
+}
+
+.ai-button-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .portfolio-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);
@@ -4782,6 +4903,206 @@ html[data-theme="dark"] .playbook-menu-popover {
   background: rgba(0, 0, 0, 0.22);
   border-radius: var(--radius-xs);
   padding: 6px 9px;
+}
+
+/* ---- Portfolio notes: freeform markdown memory (project-details/database
+   tabs) — a card list that drills into a full-width read/edit pane, no
+   modal and no structured form fields, just a title and a markdown body. ---- */
+
+.portfolio-notes-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2);
+}
+
+.portfolio-note-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-alt);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.portfolio-note-card:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-alt) 80%, var(--accent) 6%);
+}
+
+.portfolio-note-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-right: 26px;
+}
+
+.portfolio-note-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.portfolio-note-card-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-note-card-preview {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.portfolio-note-card-meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.portfolio-note-card .run-action-icon {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+}
+
+.portfolio-note-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-alt);
+  padding: var(--space-3);
+}
+
+.portfolio-note-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.portfolio-note-title-input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  padding: 6px 8px;
+  font-family: inherit;
+}
+
+.portfolio-note-title-input:hover,
+.portfolio-note-title-input:focus {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.portfolio-note-title-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.portfolio-note-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.segmented-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg);
+}
+
+.segmented-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-xs) - 3px);
+  cursor: pointer;
+}
+
+.segmented-toggle-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.portfolio-note-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.portfolio-note-editor {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 360px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: var(--space-3);
+}
+
+.portfolio-note-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.portfolio-note-preview {
+  min-height: 360px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: var(--space-3);
+  overflow-y: auto;
+}
+
+.portfolio-note-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.portfolio-note-copied {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--success);
 }
 
 #playbook-modal-backdrop {
@@ -5533,31 +5854,17 @@ body {
   position: relative;
 }
 
-body::before,
-body::after {
+body::before {
   content: "";
   position: fixed;
   z-index: 0;
   pointer-events: none;
-  border-radius: 50%;
-  background: radial-gradient(circle at 36% 28%, #aeb8ff 0%, #8796ee 48%, #7080de 100%);
-  opacity: 0.72;
-}
-
-body::before {
-  width: clamp(280px, 23vw, 450px);
-  height: clamp(280px, 23vw, 450px);
-  left: 44%;
-  top: 36%;
-  transform: translate(-50%, -50%);
-}
-
-body::after {
-  width: clamp(145px, 12vw, 230px);
-  height: clamp(145px, 12vw, 230px);
   left: 50%;
-  top: 52%;
+  top: 50%;
   transform: translate(-50%, -50%);
+  width: clamp(700px, 65vw, 1200px);
+  aspect-ratio: 1486 / 800;
+  background: url("/asset/pipe.svg") no-repeat center / contain;
 }
 
 #app,
@@ -5773,6 +6080,8 @@ body::after {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  align-items: flex-start;
+  text-align: left;
   line-height: 1;
 }
 
@@ -5780,6 +6089,11 @@ body::after {
   font-size: 7px;
   color: #555963;
   line-height: 0.9;
+}
+
+.header-date-value {
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .header-date-badge svg {
@@ -6087,8 +6401,7 @@ html[data-theme="dark"] #nav-tooltip {
 }
 
 @media (max-width: 719.98px) {
-  body::before,
-  body::after {
+  body::before {
     content: none;
   }
 

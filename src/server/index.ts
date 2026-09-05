@@ -15,6 +15,7 @@ import {
   readRequestTenant,
   requireAuth,
   requireAutomationTenant,
+  restoreTenant,
   resolveAuthFlowTenant,
   setSessionCookie,
 } from "./auth.js";
@@ -60,10 +61,16 @@ import {
   listEntries as listPortfolioEntries,
   updateEntry as updatePortfolioEntry,
   deleteEntry as deletePortfolioEntry,
+  createNote as createPortfolioNote,
+  listNotes as listPortfolioNotes,
+  updateNote as updatePortfolioNote,
+  deleteNote as deletePortfolioNote,
   PORTFOLIO_CATEGORIES,
   PORTFOLIO_ENTRY_STATUSES,
+  PORTFOLIO_NOTE_TABS,
   type PortfolioCategory,
   type PortfolioEntryStatus,
+  type PortfolioNoteTab,
 } from "../portfolio.js";
 import {
   getGmailAuthUrl,
@@ -195,7 +202,7 @@ app.use("/api", requireAuth);
 // --- Uploads: extracts text from an uploaded file for the client to attach
 // to a goal, rather than the app storing it or an agent needing a file tool.
 
-app.post("/api/uploads", upload.single("file"), async (req, res) => {
+app.post("/api/uploads", upload.single("file"), restoreTenant, async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "file is required" });
     return;
@@ -590,8 +597,11 @@ app.delete("/api/playbook/:id", (req, res) => {
 });
 
 // --- Portfolio: editable project/product tabs, each holding entries across
-// five fixed categories (blog/article/collab/pr-post/email). Same REST-for-
-// UI, MCP-tools-for-agent split as leads/playbook above.
+// five fixed categories (blog/article/collab/pr-post/email), plus freeform
+// markdown notes under "project-details"/"database" tabs — durable project
+// memory (tech stack, credentials locations, config values) agents read for
+// context. Same REST-for-UI, MCP-tools-for-agent split as leads/playbook
+// above.
 
 app.get("/api/portfolio/projects", (_req, res) => {
   res.json(listPortfolioProjects());
@@ -666,6 +676,9 @@ app.post("/api/portfolio/entries", (req, res) => {
     link: typeof req.body?.link === "string" ? req.body.link : undefined,
     date: typeof req.body?.date === "string" ? req.body.date : undefined,
     notes: typeof req.body?.notes === "string" ? req.body.notes : undefined,
+    recipient: typeof req.body?.recipient === "string" ? req.body.recipient : undefined,
+    subject: typeof req.body?.subject === "string" ? req.body.subject : undefined,
+    messageId: typeof req.body?.messageId === "string" ? req.body.messageId : undefined,
     owner: "manual",
   });
   res.status(201).json(record);
@@ -673,7 +686,7 @@ app.post("/api/portfolio/entries", (req, res) => {
 
 app.patch("/api/portfolio/entries/:id", (req, res) => {
   const patch: Record<string, unknown> = {};
-  for (const field of ["projectId", "title", "link", "date", "notes"] as const) {
+  for (const field of ["projectId", "title", "link", "date", "notes", "recipient", "subject", "messageId"] as const) {
     if (typeof req.body?.[field] === "string") patch[field] = req.body[field];
   }
   if (req.body?.category !== undefined) {
@@ -700,6 +713,63 @@ app.patch("/api/portfolio/entries/:id", (req, res) => {
 
 app.delete("/api/portfolio/entries/:id", (req, res) => {
   const ok = deletePortfolioEntry(req.params.id);
+  if (!ok) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+app.get("/api/portfolio/notes", (req, res) => {
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+  const tab = typeof req.query.tab === "string" ? req.query.tab : undefined;
+  if (tab !== undefined && !PORTFOLIO_NOTE_TABS.includes(tab as PortfolioNoteTab)) {
+    res.status(400).json({ error: `tab must be one of: ${PORTFOLIO_NOTE_TABS.join(", ")}` });
+    return;
+  }
+  res.json(listPortfolioNotes({ projectId, tab: tab as PortfolioNoteTab | undefined }));
+});
+
+app.post("/api/portfolio/notes", (req, res) => {
+  const projectId = typeof req.body?.projectId === "string" ? req.body.projectId.trim() : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  if (!projectId) {
+    res.status(400).json({ error: "projectId is required" });
+    return;
+  }
+  if (!title) {
+    res.status(400).json({ error: "title is required" });
+    return;
+  }
+  if (!PORTFOLIO_NOTE_TABS.includes(req.body?.tab as PortfolioNoteTab)) {
+    res.status(400).json({ error: `tab must be one of: ${PORTFOLIO_NOTE_TABS.join(", ")}` });
+    return;
+  }
+  const record = createPortfolioNote({
+    projectId,
+    title,
+    tab: req.body.tab as PortfolioNoteTab,
+    content: typeof req.body?.content === "string" ? req.body.content : undefined,
+    owner: "manual",
+  });
+  res.status(201).json(record);
+});
+
+app.patch("/api/portfolio/notes/:id", (req, res) => {
+  const patch: Record<string, unknown> = {};
+  for (const field of ["title", "content"] as const) {
+    if (typeof req.body?.[field] === "string") patch[field] = req.body[field];
+  }
+  const record = updatePortfolioNote(req.params.id, patch);
+  if (!record) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json(record);
+});
+
+app.delete("/api/portfolio/notes/:id", (req, res) => {
+  const ok = deletePortfolioNote(req.params.id);
   if (!ok) {
     res.status(404).json({ error: "not found" });
     return;

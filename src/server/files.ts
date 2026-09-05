@@ -176,6 +176,18 @@ export async function saveUpload(targetVirtualPath: string, originalName: string
   };
 }
 
+// Removes a file or folder (recursively). Refuses to delete a root itself
+// (relPath === "") — the three top-level roots always exist.
+export async function deleteEntry(virtualPath: string): Promise<void> {
+  const resolved = resolveVirtualPath(virtualPath);
+  if (!resolved.relPath) throw new FilesApiError(400, "cannot delete a root folder");
+
+  const stat = await fs.stat(resolved.absPath).catch(() => null);
+  if (!stat) throw new FilesApiError(404, "not found");
+
+  await fs.rm(resolved.absPath, { recursive: true, force: true });
+}
+
 // Same sanitize/dedupe shape as saveUpload above, one level of nesting only
 // (basename strips any "/" the caller tried to smuggle in) — never clobbers
 // an existing folder, appends " (n)" instead.

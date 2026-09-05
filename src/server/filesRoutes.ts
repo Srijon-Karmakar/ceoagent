@@ -4,11 +4,13 @@ import {
   FilesApiError,
   UPLOAD_LIMITS,
   createFolder,
+  deleteEntry,
   listDirectory,
   resolveVirtualPath,
   saveUpload,
   statPath,
 } from "./files.js";
+import { restoreTenant } from "./auth.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: UPLOAD_LIMITS });
 
@@ -88,7 +90,7 @@ filesRouter.get("/raw", async (req, res) => {
 // client address anything outside the three known roots (resolveVirtualPath,
 // called inside saveUpload, enforces that).
 
-filesRouter.post("/upload", upload.array("files", UPLOAD_LIMITS.files), async (req, res) => {
+filesRouter.post("/upload", upload.array("files", UPLOAD_LIMITS.files), restoreTenant, async (req, res) => {
   const targetPath = typeof req.body?.path === "string" ? req.body.path : "";
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (!files.length) {
@@ -122,6 +124,19 @@ filesRouter.post("/mkdir", async (req, res) => {
   try {
     const entry = await createFolder(targetPath, name);
     res.status(201).json({ entry });
+  } catch (err) {
+    handleFilesError(err, res);
+  }
+});
+
+// --- Delete: removes a file or folder (recursively). Refuses to touch a
+// root itself; anything else within the three known roots is fair game.
+
+filesRouter.delete("/entry", async (req, res) => {
+  const path = typeof req.query.path === "string" ? req.query.path : "";
+  try {
+    await deleteEntry(path);
+    res.status(204).end();
   } catch (err) {
     handleFilesError(err, res);
   }
