@@ -18,9 +18,10 @@ const state = {
   logNearBottom: true, // whether the log feed should auto-follow new events
   toolOverrides: new Map(), // toolUseId -> explicit user expand/collapse choice
   goalExpanded: false, // whether the run-detail header shows the full goal text or a clamped preview
-  attachment: null, // { filename, text, truncated } | null — a parsed file pending on the goal form
-  attaching: false, // true while an upload is being parsed server-side
-  attachError: null, // error message from a failed upload, cleared on next attempt
+  attachments: [], // { filename, text, truncated }[] — parsed files pending on the goal form
+  attaching: false, // true while an upload (or batch of uploads) is being parsed server-side
+  attachError: null, // error message from the most recent failed upload(s), cleared on next attempt
+  memoryHeroError: null, // error message from a failed "Feed Me" submit (e.g. request too large), cleared on next attempt
   confirmModal: null, // { title, message, confirmLabel, danger, onConfirm } | null
   schedules: [], // ScheduleRecord[] from /api/schedule — loaded when the Calendar department view is active
   calendarCursor: null, // Date (first-of-month currently displayed by the mini calendar / month panel) — lazily set on first render
@@ -52,6 +53,14 @@ const state = {
   portfolioNotes: [], // PortfolioNote[] for the active project only — reloaded on project switch, alongside portfolioEntries
   portfolioOpenNoteId: null, // id of the note currently drilled into, or null to show the notes list
   portfolioNoteDraft: null, // { title, content, mode: "preview"|"edit", dirty, saving, error } | null — local edit buffer for the open note
+  portfolioOpenEntryId: null, // id of the portfolio entry currently drilled into, or null to show the table
+  portfolioEntryDraft: null, // local edit buffer for the open entry, same shape as portfolioNoteDraft plus category/status/date/link/subject/recipient/messageId
+  memoryEntries: [], // MemoryEntry[] from /api/memory — loaded when the Browse Memory view is active
+  memoryOpenEntryId: null, // id of the memory entry currently drilled into, or null to show the list
+  memoryEntryDraft: null, // { title, content, mode: "preview"|"edit", dirty, saving, error } | null — local edit buffer for the open entry
+  guardedDeleteModal: null, // { title, message, requireText, confirmLabel, onConfirm, inputValue } | null — a delete confirm that also requires typing requireText to match before it enables, see openGuardedDeleteModal()
+  memoryHeroInput: "", // controlled value for the Memory hero's own textarea (unlike the generic #goal-input, this needs to be tracked live so the hero can show "Watching..." while you type)
+  memoryHeroSubmitting: false, // true from the moment "Feed Me" is clicked until submitGoal() resolves (covers the network round-trip before a run record even exists)
   filesChildren: new Map(), // virtual path ("" = roots) -> FileEntry[] already fetched, so re-expanding a folder is instant
   filesExpanded: new Set(), // virtual paths of folders currently expanded in the tree
   filesSelectedPath: null, // virtual path of the selected file/folder, or null
@@ -75,6 +84,9 @@ const state = {
 
 let eventSource = null;
 let lastRenderKey = null;
+let memoryOrbCleanup = null;
+let memoryOrbModulePromise = null;
+let memoryOrbMountToken = 0;
 const AUTH_STORAGE_KEY = "ceo_agent_supabase_session";
 
 const NAV_STATIC = {
@@ -88,16 +100,21 @@ const NAV_STATIC = {
 
 // Shared by render() and renderNav() — Accounts/Files/Settings/Tools are
 // full-width utility pages with no goal composer or run history, unlike
-// Overview/a department.
-function isFullWidthView(viewType) {
+// Overview/a department. Takes the whole view object (not just .type) since
+// the Memory department is the one exception that needs its .key too — it's
+// a "department" view type but replaces the standard composer+run-history
+// sidebar with its own full-page hero UI (see renderMemoryHero()).
+function isFullWidthView(view) {
+  if (view.type === "department" && view.key === "memory") return true;
   return (
-    viewType === "accounts" ||
-    viewType === "files" ||
-    viewType === "settings" ||
-    viewType === "tools" ||
-    viewType === "playbook" ||
-    viewType === "content-calendar" ||
-    viewType === "portfolio"
+    view.type === "accounts" ||
+    view.type === "files" ||
+    view.type === "settings" ||
+    view.type === "tools" ||
+    view.type === "playbook" ||
+    view.type === "content-calendar" ||
+    view.type === "portfolio" ||
+    view.type === "memory-browse"
   );
 }
 
@@ -692,6 +709,40 @@ function renderConfirmModal() {
   `;
 }
 
+// A stricter sibling of openConfirmModal for permanent/hard-to-recover
+// deletes (memory entries today) — the Delete button stays disabled until
+// the user types the entity's exact title, so it can't be dismissed away
+// with the same single reflex click as an ordinary confirm.
+function openGuardedDeleteModal({ title, message, requireText, confirmLabel = "Delete", onConfirm }) {
+  state.guardedDeleteModal = { title, message, requireText, confirmLabel, onConfirm, inputValue: "" };
+  render();
+}
+
+function closeGuardedDeleteModal() {
+  state.guardedDeleteModal = null;
+  render();
+}
+
+function renderGuardedDeleteModal() {
+  const m = state.guardedDeleteModal;
+  if (!m) return "";
+  const matches = m.inputValue === m.requireText;
+  return `
+    <div class="confirm-backdrop" id="guarded-delete-backdrop">
+      <div class="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="guarded-delete-title">
+        <h3 id="guarded-delete-title">${escapeHtml(m.title)}</h3>
+        <p class="confirm-modal-message">${escapeHtml(m.message)}</p>
+        <p class="confirm-modal-message">Type <strong>${escapeHtml(m.requireText)}</strong> to confirm.</p>
+        <input type="text" class="guarded-delete-input" id="guarded-delete-input" value="${escapeHtml(m.inputValue)}" autocomplete="off" placeholder="${escapeHtml(m.requireText)}" />
+        <div class="confirm-modal-actions">
+          <button type="button" class="confirm-btn confirm-btn-cancel" id="guarded-delete-cancel">Cancel</button>
+          <button type="button" class="confirm-btn confirm-btn-danger" id="guarded-delete-confirm" ${matches ? "" : "disabled"}>${escapeHtml(m.confirmLabel)}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 async function loadDocumentsForCurrentView() {
   if (state.view.type === "department") {
     state.documents = await fetchJSON(`/api/documents?agentKey=${encodeURIComponent(state.view.key)}`);
@@ -753,6 +804,12 @@ async function loadPortfolioNotes() {
     return;
   }
   state.portfolioNotes = await fetchJSON(`/api/portfolio/notes?projectId=${encodeURIComponent(state.portfolioActiveProjectId)}`);
+}
+
+// ---------- Memory (Browse view) ----------
+
+async function loadMemoryEntries() {
+  state.memoryEntries = await fetchJSON("/api/memory");
 }
 
 // ---------- Files view ----------
@@ -1004,6 +1061,13 @@ async function switchView(view) {
   state.portfolioProjectModal = null;
   state.portfolioOpenNoteId = null;
   state.portfolioNoteDraft = null;
+  state.portfolioOpenEntryId = null;
+  state.portfolioEntryDraft = null;
+  state.memoryOpenEntryId = null;
+  state.memoryEntryDraft = null;
+  state.guardedDeleteModal = null;
+  state.memoryHeroInput = "";
+  state.memoryHeroSubmitting = false;
   render();
   const loaders = [loadRunsForCurrentView(), loadDocumentsForCurrentView()];
   if (view.type === "overview") loaders.push(loadAnalytics());
@@ -1015,16 +1079,20 @@ async function switchView(view) {
   if (view.type === "settings") loaders.push(loadSettings());
   if (view.type === "tools") loaders.push(loadTools());
   if (view.type === "portfolio") loaders.push(loadPortfolioProjects());
+  if (view.type === "memory-browse") loaders.push(loadMemoryEntries());
   await Promise.all(loaders);
 
   // A department page with real run history but nothing selected used to
   // just show a blank "submit a goal" prompt — auto-open the most recent
   // run instead, so landing on e.g. Manager never looks empty when it
-  // isn't. Overview/Calendar/CRM are exempt: each already has its own
+  // isn't. Overview/Calendar/CRM/Memory are exempt: each already has its own
   // "nothing selected" dashboard (bento overview, calendar grid, lead
-  // kanban board — see renderMain) that this would otherwise always hide
-  // behind the latest run's log.
-  const hasOwnDashboard = view.type === "department" && (view.key === "calendar" || view.key === "crm");
+  // kanban board, the Memory hero — see renderMain) that this would
+  // otherwise always hide behind the latest run's log. Memory in particular
+  // must never auto-open a past run — its hero UI treats "a run is
+  // selected" as "I was just fed something, show Analysing/Done," which
+  // would misfire showing stale state on every visit otherwise.
+  const hasOwnDashboard = view.type === "department" && (view.key === "calendar" || view.key === "crm" || view.key === "memory");
   if (view.type === "department" && !hasOwnDashboard && state.runs.length > 0) {
     await selectRun(state.runs[0].id);
     return;
@@ -1090,55 +1158,129 @@ function handleStreamEvent(event) {
   render();
 }
 
+function memoryHeroStatus() {
+  if (state.selectedRun) {
+    if (state.selectedRun.status === "running") return "analysing";
+    if (state.selectedRun.status === "success") return "done";
+    if (state.selectedRun.status === "error") return "error";
+  }
+  if (state.memoryHeroSubmitting) return "analysing";
+  if (state.memoryHeroInput.trim()) return "watching";
+  return "idle";
+}
+
+const MEMORY_HERO_STATUS_TEXT = {
+  idle: "The Brain",
+  watching: "Watching…",
+  analysing: "Analysing…",
+  done: "Done..",
+  error: "Hmm, that didn't work",
+};
+
+// The Memory agent's prompt (agents.ts) always ends its reply with a short,
+// concrete confirmation of what it stored — that's exactly what belongs
+// here, so pull the run's last assistant text message rather than
+// fabricating a generic "saved!" that could be wrong (e.g. if it actually
+// answered a question instead of storing anything).
+function memoryHeroConfirmation() {
+  const run = state.selectedRun;
+  if (!run) return "";
+  if (run.status === "error") return run.summary || "Nothing was saved — something went wrong.";
+  const textEvents = (run.events || []).filter((e) => e.type === "text");
+  const last = textEvents[textEvents.length - 1];
+  return (last?.text || run.summary || "Saved.").trim();
+}
+
 // ---------- Actions ----------
 
 async function submitGoal(goal) {
   // The record's own displayed goal stays exactly what was typed — the
-  // server appends the attachment's text only to what the agent receives,
+  // server appends each attachment's text only to what the agent receives,
   // so a large file dump never ends up rendered as a run's heading.
-  const attachment = state.attachment ?? undefined;
+  const attachments = state.attachments.length ? state.attachments : undefined;
   let id;
   if (state.view.type === "overview") {
     ({ id } = await fetchJSON("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, attachment }),
+      body: JSON.stringify({ goal, attachments }),
     }));
   } else if (state.view.type === "department") {
     ({ id } = await fetchJSON(`/api/agents/${state.view.key}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, attachment }),
+      body: JSON.stringify({ goal, attachments }),
     }));
   } else {
     return;
   }
-  state.attachment = null;
+  state.attachments = [];
   state.attachError = null;
   await loadRunsForCurrentView();
   render();
   await selectRun(id);
 }
 
-async function uploadAttachment(file) {
+// Uploads every file from a (possibly multi-select) FileList in parallel and
+// appends each successfully parsed one to state.attachments — additive, not
+// replacing, so picking files in two batches (or dragging more in later)
+// keeps what's already attached. One bad file (wrong type, too large) is
+// reported without discarding the others that parsed fine.
+async function uploadAttachments(fileList) {
+  const files = Array.from(fileList ?? []);
+  if (!files.length) return;
+
   state.attaching = true;
-  state.attachment = null;
   state.attachError = null;
   render();
 
-  const formData = new FormData();
-  formData.append("file", file);
-  try {
-    const res = await fetch("/api/uploads", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error ?? `Upload failed (${res.status})`);
-    state.attachment = { filename: data.filename, text: data.text, truncated: data.truncated };
-  } catch (err) {
-    state.attachError = err instanceof Error ? err.message : String(err);
-  } finally {
+  // Unlike fetchJSON, this hits a plain fetch (multipart body, not JSON) —
+  // it still needs the same proactive session refresh, or a token that's
+  // about to expire fails only here while every other request keeps working.
+  await refreshStoredSessionIfNeeded();
+
+  let sawAuthFailure = false;
+  const results = await Promise.allSettled(
+    files.map(async (file) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/uploads", { method: "POST", body: formData });
+      if (res.status === 401) sawAuthFailure = true;
+      // A failed-auth or proxy/5xx response can come back as an HTML error
+      // page rather than JSON — parse defensively instead of letting a raw
+      // "Unexpected token '<'" surface as the error message.
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(`Upload failed (${res.status})`);
+      }
+      if (!res.ok) throw new Error(data?.error ?? `Upload failed (${res.status})`);
+      return { filename: data.filename, text: data.text, truncated: data.truncated };
+    }),
+  );
+
+  if (sawAuthFailure) {
     state.attaching = false;
-    render();
+    await resetToSignedOut("Your session expired. Sign in again.");
+    return;
   }
+
+  for (const result of results) {
+    if (result.status === "fulfilled") state.attachments.push(result.value);
+  }
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length) {
+    state.attachError = failures.map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason))).join("; ");
+  }
+
+  state.attaching = false;
+  render();
+}
+
+function removeAttachment(index) {
+  state.attachments.splice(index, 1);
+  render();
 }
 
 // Continues a finished run's same agent session (via the server's resume
@@ -1653,7 +1795,8 @@ function render() {
   const prevSelStart = prevFocused?.selectionStart;
   const prevSelEnd = prevFocused?.selectionEnd;
 
-  const showSidebar = !isFullWidthView(state.view.type);
+  destroyMemoryOrb();
+  const showSidebar = !isFullWidthView(state.view);
   const mobile = isMobileLayout();
   app.innerHTML = `
     <div class="layout">
@@ -1672,10 +1815,12 @@ function render() {
     </div>
     <div id="nav-tooltip"></div>
     ${renderConfirmModal()}
+    ${renderGuardedDeleteModal()}
     ${renderFolderModal()}
   `;
   attachHandlers();
   if (window.lucide) window.lucide.createIcons();
+  initMemoryOrb();
   initLenis();
 
   if (prevFocusId) {
@@ -1793,6 +1938,48 @@ function renderControlIcon(icon, label) {
   return `<i data-lucide="${icon}"></i>`;
 }
 
+function destroyMemoryOrb() {
+  memoryOrbMountToken += 1;
+  if (memoryOrbCleanup) {
+    memoryOrbCleanup();
+    memoryOrbCleanup = null;
+  }
+}
+
+function initMemoryOrb() {
+  const container = document.getElementById("memory-hero-orb");
+  if (!container) return;
+  const token = ++memoryOrbMountToken;
+  memoryOrbModulePromise ??= import("/memoryOrb.js");
+  memoryOrbModulePromise
+    .then(({ mountMemoryOrb }) => {
+      if (token !== memoryOrbMountToken || !container.isConnected) return;
+      memoryOrbCleanup = mountMemoryOrb(container, {
+        hue: Number(container.dataset.hue || 0),
+        hoverIntensity: Number(container.dataset.hoverIntensity || 2),
+        rotateOnHover: container.dataset.rotateOnHover !== "false",
+        forceHoverState: container.dataset.forceHoverState === "true",
+        backgroundColor: container.dataset.backgroundColor || "#000000",
+      });
+    })
+    .catch(() => {
+      container.classList.add("orb-failed");
+    });
+}
+
+function syncMemoryHeroInputUi() {
+  const status = memoryHeroStatus();
+  const statusEl = document.querySelector(".memory-hero-status-text");
+  if (statusEl) {
+    statusEl.dataset.status = status;
+    statusEl.textContent = MEMORY_HERO_STATUS_TEXT[status];
+  }
+  const submitBtn = document.getElementById("memory-hero-submit");
+  if (submitBtn) submitBtn.disabled = state.memoryHeroSubmitting || state.attaching || !state.memoryHeroInput.trim();
+  const orb = document.getElementById("memory-hero-orb");
+  if (orb) orb.dataset.forceHoverState = "false";
+}
+
 function navButton(key, label, icon, isActive, viewObj, accentColor) {
   const style = accentColor ? ` style="--icon-accent:${accentColor}"` : "";
   return `
@@ -1861,7 +2048,7 @@ function todayLabel() {
 // stay put across breakpoints since they fit on one row even on narrow
 // screens once the icon rail moves out of the way, see style.css).
 function renderHeader(mobile) {
-  const showSidebar = !isFullWidthView(state.view.type);
+  const showSidebar = !isFullWidthView(state.view);
   return `
     <header class="app-header">
       <div class="brand">
@@ -1883,6 +2070,9 @@ function renderHeader(mobile) {
         }
         <button type="button" class="header-icon-btn" id="theme-toggle" data-label="${state.theme === "dark" ? "Light mode" : "Dark mode"}" aria-label="Toggle theme">
           ${renderControlIcon("theme.webp", "Theme")}
+        </button>
+        <button type="button" class="header-icon-btn memory-header-btn${state.view.type === "department" && state.view.key === "memory" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "department", key: "memory" }))}' data-label="Memory" aria-label="Memory">
+          <i data-lucide="brain"></i>
         </button>
         <div class="playbook-menu">
           <button type="button" class="header-icon-btn${state.view.type === "playbook" ? " active" : ""}" data-label="Playbook" aria-label="Playbook">
@@ -1945,23 +2135,26 @@ const ATTACH_ACCEPT =
 // Shown above .goal-actions only once something is attached or errored; the
 // trigger itself lives in .goal-actions as the circular "+" button.
 function renderAttachmentRow() {
-  if (state.attachment) {
-    return `
-      <div class="attachment-row">
+  const chips = state.attachments
+    .map(
+      (a, i) => `
         <div class="attachment-chip">
           <i data-lucide="file-text"></i>
-          <span class="attachment-name">${escapeHtml(state.attachment.filename)}</span>
+          <span class="attachment-name">${escapeHtml(a.filename)}</span>
           ${
-            state.attachment.truncated
+            a.truncated
               ? `<span class="attachment-warn" title="File was large — only the first part was attached"><i data-lucide="alert-triangle"></i></span>`
               : ""
           }
-          <button type="button" class="attachment-remove" id="attachment-remove" aria-label="Remove attachment">
+          <button type="button" class="attachment-remove" data-remove-attachment="${i}" aria-label="Remove attachment">
             <i data-lucide="x"></i>
           </button>
-        </div>
-      </div>
-    `;
+        </div>`,
+    )
+    .join("");
+
+  if (chips) {
+    return `<div class="attachment-row">${chips}</div>`;
   }
   if (state.attachError) {
     return `<div class="attachment-row"><span class="attachment-error">${escapeHtml(state.attachError)}</span></div>`;
@@ -1979,9 +2172,9 @@ function renderGoalActions() {
             : renderControlIcon("attach.webp", "Attach file")
         }
       </button>
-      <input type="file" id="attach-input" accept="${ATTACH_ACCEPT}" hidden />
+      <input type="file" id="attach-input" accept="${ATTACH_ACCEPT}" multiple hidden />
       <span class="ai-button-wrap">
-        <button type="submit" id="submit-btn" class="ai-button" aria-label="Run task">
+        <button type="submit" id="submit-btn" class="ai-button" aria-label="Run task" ${state.attaching ? "disabled" : ""}>
           <span class="button-outer">
             <span class="button-inner">
               <span>Run</span>
@@ -2016,6 +2209,7 @@ function renderComposer() {
           <textarea id="goal-input" placeholder="${placeholder}" rows="4" required></textarea>
         </div>
         ${renderAttachmentRow()}
+        <div class="attachment-row" id="goal-submit-error-row" hidden><span class="attachment-error" id="goal-submit-error"></span></div>
         ${renderGoalActions()}
       </form>
     </div>
@@ -2077,6 +2271,8 @@ function renderMain() {
   if (state.view.type === "files") return renderFilesView();
   if (state.view.type === "settings") return renderSettingsView();
   if (state.view.type === "portfolio") return renderPortfolioView();
+  if (state.view.type === "memory-browse") return renderMemoryBrowseView();
+  if (state.view.type === "department" && state.view.key === "memory") return renderMemoryHero();
   if (state.view.type === "playbook") return renderPlaybookView();
   if (state.view.type === "content-calendar") return renderContentCalendarView();
   if (!state.selectedRun) {
@@ -2259,6 +2455,7 @@ function renderRunDetail() {
         <span class="status-badge ${run.status}">${statusLabel(run.status)}</span>
         ${run.archived ? `<span class="status-badge archived">Archived</span>` : ""}
         <span class="run-meta">${run.costUsd != null ? `$${run.costUsd.toFixed(4)}` : ""}</span>
+        ${run.status === "error" && run.summary ? `<p class="run-error-summary">${escapeHtml(run.summary)}</p>` : ""}
         <div class="run-actions">
           ${
             run.archived
@@ -2386,7 +2583,8 @@ function renderToolCard(event, result) {
 
 function renderTurnDivider(event) {
   const label = event.status === "error" ? "Turn failed" : "Turn complete";
-  return `<div class="turn-divider ${event.status}"><span>${escapeHtml(label)} · $${event.costUsd.toFixed(4)} · ${formatClock(event.ts)}</span></div>`;
+  const reason = event.status === "error" && event.error ? `: ${event.error}` : "";
+  return `<div class="turn-divider ${event.status}"><span>${escapeHtml(label)}${escapeHtml(reason)} · $${event.costUsd.toFixed(4)} · ${formatClock(event.ts)}</span></div>`;
 }
 
 function renderTypingIndicator(events) {
@@ -4587,6 +4785,263 @@ async function performDeletePortfolioNote(id) {
   render();
 }
 
+// ---------- Memory: Browse view ----------
+//
+// The system's permanent, cross-agent memory. Entries normally come from
+// the Memory department's chat (a real agent decides how to structure what
+// you tell it — see agents.ts), but can also be added/edited directly here.
+// Same drill-down preview/edit pattern as Portfolio notes; the one real
+// difference is deletion, which is guarded (type the title to confirm)
+// since memory is meant to persist — see openGuardedDeleteModal above.
+
+function draftFromMemoryEntry(entry) {
+  return { title: entry.title, content: entry.content, mode: "preview", dirty: false, saving: false, error: null, copied: false };
+}
+
+function openMemoryEntry(id) {
+  const entry = state.memoryEntries.find((e) => e.id === id);
+  if (!entry) return;
+  state.memoryOpenEntryId = id;
+  state.memoryEntryDraft = draftFromMemoryEntry(entry);
+  render();
+}
+
+function closeMemoryEntry() {
+  state.memoryOpenEntryId = null;
+  state.memoryEntryDraft = null;
+  render();
+}
+
+function setMemoryEntryMode(mode) {
+  if (!state.memoryEntryDraft) return;
+  state.memoryEntryDraft.mode = mode;
+  render();
+}
+
+async function addMemoryEntry() {
+  const entry = await fetchJSON("/api/memory", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "Untitled memory", content: "" }),
+  });
+  await loadMemoryEntries();
+  state.memoryOpenEntryId = entry.id;
+  state.memoryEntryDraft = { ...draftFromMemoryEntry(entry), mode: "edit" };
+  render();
+}
+
+async function saveMemoryEntryDraft() {
+  const draft = state.memoryEntryDraft;
+  const id = state.memoryOpenEntryId;
+  if (!draft || !id) return;
+  const title = draft.title.trim();
+  if (!title) {
+    draft.error = "Title is required.";
+    render();
+    return;
+  }
+  draft.error = null;
+  draft.saving = true;
+  render();
+  try {
+    await fetchJSON(`/api/memory/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, content: draft.content }),
+    });
+    await loadMemoryEntries();
+    draft.dirty = false;
+    draft.saving = false;
+    render();
+  } catch (err) {
+    draft.saving = false;
+    draft.error = err instanceof Error ? err.message : String(err);
+    render();
+  }
+}
+
+async function copyMemoryEntryContent() {
+  const draft = state.memoryEntryDraft;
+  if (!draft) return;
+  try {
+    await navigator.clipboard.writeText(draft.content);
+    draft.copied = true;
+    render();
+    setTimeout(() => {
+      if (state.memoryEntryDraft === draft) {
+        draft.copied = false;
+        render();
+      }
+    }, 1500);
+  } catch {
+    draft.error = "Couldn't copy — your browser blocked clipboard access.";
+    render();
+  }
+}
+
+function deleteMemoryEntry(id, title) {
+  openGuardedDeleteModal({
+    title: "Delete this memory entry?",
+    message: "This is permanent — every agent that reads memory will lose this fact.",
+    requireText: title,
+    confirmLabel: "Delete permanently",
+    onConfirm: () => performDeleteMemoryEntry(id),
+  });
+}
+
+async function performDeleteMemoryEntry(id) {
+  await fetchJSON(`/api/memory/${id}`, { method: "DELETE" });
+  if (state.memoryOpenEntryId === id) {
+    state.memoryOpenEntryId = null;
+    state.memoryEntryDraft = null;
+  }
+  await loadMemoryEntries();
+  render();
+}
+
+function renderMemoryEntryCard(entry) {
+  return `
+    <div class="memory-entry-card portfolio-note-card" data-open-memory-entry="${entry.id}">
+      <div class="portfolio-note-card-body">
+        <div class="portfolio-note-card-head">
+          <span class="portfolio-note-card-title">${escapeHtml(entry.title || "Untitled memory")}</span>
+          ${
+            entry.owner === "agent"
+              ? `<span class="portfolio-owner-badge agent">Memory chat</span>`
+              : `<span class="portfolio-owner-badge manual">Manual</span>`
+          }
+        </div>
+        <p class="portfolio-note-card-preview">${entry.content ? escapeHtml(entry.content.slice(0, 180)) : "Empty entry"}</p>
+        <span class="portfolio-note-card-meta">Updated ${formatTimestampShort(entry.updatedAt)}</span>
+      </div>
+      <button type="button" class="run-action-icon run-action-danger" data-delete-memory-entry="${entry.id}" aria-label="Delete entry"><i data-lucide="trash-2"></i></button>
+    </div>
+  `;
+}
+
+function renderMemoryEntryDetail(entry) {
+  const draft = state.memoryEntryDraft;
+  if (!draft) return "";
+  const mode = draft.mode === "edit" ? "edit" : "preview";
+  return `
+    <div class="memory-entry-detail portfolio-note-detail">
+      <div class="portfolio-note-detail-head">
+        <button type="button" class="run-action-icon" id="memory-entry-back" aria-label="Back to memory list"><i data-lucide="arrow-left"></i></button>
+        <input type="text" class="portfolio-note-title-input" id="memory-entry-title-input" value="${escapeHtml(draft.title)}" placeholder="Untitled memory" />
+        <div class="portfolio-note-detail-actions">
+          <div class="segmented-toggle">
+            <button type="button" class="segmented-toggle-btn${mode === "preview" ? " active" : ""}" data-memory-entry-mode="preview">Preview</button>
+            <button type="button" class="segmented-toggle-btn${mode === "edit" ? " active" : ""}" data-memory-entry-mode="edit">Edit</button>
+          </div>
+          <button type="button" class="run-action-icon" id="memory-entry-copy" aria-label="Copy content"><i data-lucide="copy"></i></button>
+          <button type="button" class="run-action-icon run-action-danger" id="memory-entry-delete" aria-label="Delete entry"><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>
+      <div class="portfolio-note-meta">
+        Updated ${formatTimestampShort(entry.updatedAt)}
+        ${
+          entry.owner === "agent"
+            ? `· <span class="portfolio-owner-badge agent">Memory chat</span>`
+            : `· <span class="portfolio-owner-badge manual">Manual</span>`
+        }
+      </div>
+      ${
+        mode === "edit"
+          ? `<textarea class="portfolio-note-editor" id="memory-entry-content-input" placeholder="Write or paste the fact to remember…" data-lenis-prevent>${escapeHtml(draft.content)}</textarea>`
+          : draft.content
+            ? `<div class="portfolio-note-preview msg-text" data-lenis-prevent>${renderMarkdown(draft.content)}</div>`
+            : `<div class="empty-state"><p>Empty — click Edit to write or paste something.</p></div>`
+      }
+      <div class="portfolio-note-detail-footer">
+        ${draft.error ? `<p class="attachment-error">${escapeHtml(draft.error)}</p>` : ""}
+        ${draft.copied ? `<span class="portfolio-note-copied">Copied ✓</span>` : ""}
+        <button type="button" class="confirm-btn confirm-btn-primary" id="memory-entry-save" ${!draft.dirty || draft.saving ? "disabled" : ""}>${draft.saving ? "Saving…" : "Save"}</button>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Memory: hero (the department chat itself) ----------
+//
+// Memory is a "department" view like Sales/HR, but replaces the standard
+// composer+run-history sidebar entirely (see isFullWidthView) with a
+// full-page hero: a big ripple-pulsing brain, animated status text that
+// tracks the underlying run's real lifecycle (typing -> submitted -> the
+// run's actual "running"/"success"/"error" status from the SSE stream,
+// not a fake timer), and a big pill input. Submission still goes through
+// the exact same submitGoal()/selectRun() path any department chat uses —
+// only the chrome around it is bespoke.
+
+function renderMemoryHero() {
+  const status = memoryHeroStatus();
+  const statusText = MEMORY_HERO_STATUS_TEXT[status];
+  const confirmation = status === "done" || status === "error" ? memoryHeroConfirmation() : "";
+  const busy = status === "analysing";
+
+  return `
+    <div class="memory-hero">
+      <div class="memory-hero-topbar">
+        <button type="button" class="run-action-icon" id="memory-hero-browse" aria-label="Browse memory"><i data-lucide="database"></i></button>
+      </div>
+      <div class="memory-hero-center">
+        <div class="memory-hero-icon-wrap${busy ? " busy" : ""}">
+          <div
+            class="memory-hero-orb"
+            id="memory-hero-orb"
+            data-hue="238"
+            data-hover-intensity="0"
+            data-rotate-on-hover="false"
+            data-force-hover-state="false"
+            data-background-color="#000000"
+            aria-hidden="true"
+          ></div>
+        </div>
+        <h1 class="memory-hero-status-text" data-status="${status}">${escapeHtml(statusText)}</h1>
+        ${confirmation ? `<p class="memory-hero-confirmation">${escapeHtml(confirmation)}</p>` : ""}
+      </div>
+      <div class="memory-hero-composer">
+        <form id="memory-hero-form">
+          <div class="memory-hero-input-shell">
+            <textarea id="memory-hero-input" placeholder="Say me something&#10;to keep in mind" rows="1" ${state.memoryHeroSubmitting ? "disabled" : ""}>${escapeHtml(state.memoryHeroInput)}</textarea>
+            <div class="memory-hero-actions">
+              <button type="button" class="attach-circle" id="attach-btn" ${state.attaching ? "disabled" : ""} aria-label="Attach file">
+                ${state.attaching ? `<i data-lucide="loader-circle"></i>` : `<i data-lucide="plus"></i>`}
+              </button>
+              <input type="file" id="attach-input" accept="${ATTACH_ACCEPT}" multiple hidden />
+              <button type="submit" class="memory-feed-btn" id="memory-hero-submit" ${state.memoryHeroSubmitting || state.attaching || !state.memoryHeroInput.trim() ? "disabled" : ""}>
+                ${state.memoryHeroSubmitting ? "Feeding…" : state.attaching ? "Attaching…" : "Feed Me"}
+              </button>
+            </div>
+          </div>
+          ${renderAttachmentRow()}
+          ${state.memoryHeroError ? `<div class="attachment-row"><span class="attachment-error">${escapeHtml(state.memoryHeroError)}</span></div>` : ""}
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderMemoryBrowseView() {
+  const openEntry = state.memoryEntries.find((e) => e.id === state.memoryOpenEntryId);
+  return `
+    <div class="portfolio-view">
+      <div class="section-head">
+        <button type="button" class="run-action-icon" id="memory-back-to-chat" aria-label="Back to Memory chat"><i data-lucide="arrow-left"></i></button>
+        <h2>Memory</h2>
+        <span class="section-count">${state.memoryEntries.length} ${state.memoryEntries.length === 1 ? "entry" : "entries"}</span>
+        ${!openEntry ? `<button type="button" class="ai-button" id="memory-add-entry"><i data-lucide="plus"></i> Add manually</button>` : ""}
+      </div>
+      ${
+        openEntry
+          ? renderMemoryEntryDetail(openEntry)
+          : state.memoryEntries.length
+            ? `<div class="portfolio-notes-list">${state.memoryEntries.map(renderMemoryEntryCard).join("")}</div>`
+            : `<div class="empty-state"><p>Nothing in memory yet — feed it something from the Memory chat, or add an entry manually. It's saved as-is and stays until you deliberately delete it.</p></div>`
+      }
+    </div>
+  `;
+}
+
 function openAddPortfolioProjectModal() {
   state.portfolioProjectModal = { mode: "add", id: null, name: "", submitting: false, error: null };
   render();
@@ -4806,7 +5261,7 @@ function renderPortfolioNotesList(notes, categoryLabel) {
               }
             </div>
             <p class="portfolio-note-card-preview">${note.content ? escapeHtml(note.content.slice(0, 180)) : "Empty note"}</p>
-            <span class="portfolio-note-card-meta">Updated ${formatPortfolioNoteTimestamp(note.updatedAt)}</span>
+            <span class="portfolio-note-card-meta">Updated ${formatTimestampShort(note.updatedAt)}</span>
           </div>
           <button type="button" class="run-action-icon run-action-danger" data-delete-portfolio-note="${note.id}" aria-label="Delete note"><i data-lucide="trash-2"></i></button>
         </div>
@@ -4817,7 +5272,7 @@ function renderPortfolioNotesList(notes, categoryLabel) {
   `;
 }
 
-function formatPortfolioNoteTimestamp(iso) {
+function formatTimestampShort(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
@@ -4843,7 +5298,7 @@ function renderPortfolioNoteDetail(note) {
         </div>
       </div>
       <div class="portfolio-note-meta">
-        Updated ${formatPortfolioNoteTimestamp(note.updatedAt)}
+        Updated ${formatTimestampShort(note.updatedAt)}
         ${
           note.owner === "agent"
             ? `· <span class="portfolio-owner-badge agent">${escapeHtml(note.agentKey ?? "agent")}</span>`
@@ -4974,6 +5429,22 @@ function attachHandlers() {
     document.getElementById("confirm-modal-confirm")?.addEventListener("click", () => {
       const onConfirm = state.confirmModal?.onConfirm;
       closeConfirmModal();
+      onConfirm?.();
+    });
+  }
+
+  if (state.guardedDeleteModal) {
+    document.getElementById("guarded-delete-backdrop")?.addEventListener("click", (e) => {
+      if (e.target.id === "guarded-delete-backdrop") closeGuardedDeleteModal();
+    });
+    document.getElementById("guarded-delete-cancel")?.addEventListener("click", () => closeGuardedDeleteModal());
+    document.getElementById("guarded-delete-input")?.addEventListener("input", (e) => {
+      state.guardedDeleteModal.inputValue = e.target.value;
+      render();
+    });
+    document.getElementById("guarded-delete-confirm")?.addEventListener("click", () => {
+      const onConfirm = state.guardedDeleteModal?.onConfirm;
+      closeGuardedDeleteModal();
       onConfirm?.();
     });
   }
@@ -5339,6 +5810,86 @@ function attachHandlers() {
     });
   }
 
+  // --- Memory ---
+
+  document.getElementById("memory-hero-browse")?.addEventListener("click", () => switchView({ type: "memory-browse" }));
+  document.getElementById("memory-back-to-chat")?.addEventListener("click", () => switchView({ type: "department", key: "memory" }));
+
+  const heroInput = document.getElementById("memory-hero-input");
+  heroInput?.addEventListener("input", () => {
+    state.memoryHeroInput = heroInput.value;
+    syncMemoryHeroInputUi();
+  });
+  heroInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById("memory-hero-form")?.requestSubmit();
+    }
+  });
+
+  document.getElementById("memory-hero-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = state.memoryHeroInput.trim();
+    if (!text || state.memoryHeroSubmitting) return;
+    state.memoryHeroSubmitting = true;
+    state.memoryHeroError = null;
+    render();
+    try {
+      await submitGoal(text);
+      // Only clear the typed text once the run is actually created — on
+      // failure (e.g. the request was too large) the user keeps what they
+      // wrote instead of it silently vanishing.
+      state.memoryHeroInput = "";
+    } catch (err) {
+      state.memoryHeroError = err instanceof Error ? err.message : String(err);
+    } finally {
+      state.memoryHeroSubmitting = false;
+      render();
+    }
+  });
+  document.getElementById("memory-add-entry")?.addEventListener("click", () => addMemoryEntry());
+
+  document.querySelectorAll("[data-open-memory-entry]").forEach((el) => {
+    el.addEventListener("click", () => openMemoryEntry(el.dataset.openMemoryEntry));
+  });
+
+  document.querySelectorAll("[data-delete-memory-entry]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.deleteMemoryEntry;
+      const entry = state.memoryEntries.find((m) => m.id === id);
+      deleteMemoryEntry(id, entry?.title ?? "");
+    });
+  });
+
+  if (state.memoryEntryDraft) {
+    document.getElementById("memory-entry-back")?.addEventListener("click", () => closeMemoryEntry());
+    document.getElementById("memory-entry-copy")?.addEventListener("click", () => copyMemoryEntryContent());
+    document.getElementById("memory-entry-delete")?.addEventListener("click", () => {
+      const entry = state.memoryEntries.find((m) => m.id === state.memoryOpenEntryId);
+      deleteMemoryEntry(state.memoryOpenEntryId, entry?.title ?? "");
+    });
+    document.getElementById("memory-entry-save")?.addEventListener("click", () => saveMemoryEntryDraft());
+
+    document.querySelectorAll("[data-memory-entry-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => setMemoryEntryMode(btn.dataset.memoryEntryMode));
+    });
+
+    const memoryTitleInput = document.getElementById("memory-entry-title-input");
+    memoryTitleInput?.addEventListener("input", () => {
+      state.memoryEntryDraft.title = memoryTitleInput.value;
+      state.memoryEntryDraft.dirty = true;
+      document.getElementById("memory-entry-save")?.removeAttribute("disabled");
+    });
+
+    const memoryContentInput = document.getElementById("memory-entry-content-input");
+    memoryContentInput?.addEventListener("input", () => {
+      state.memoryEntryDraft.content = memoryContentInput.value;
+      state.memoryEntryDraft.dirty = true;
+      document.getElementById("memory-entry-save")?.removeAttribute("disabled");
+    });
+  }
+
   const form = document.getElementById("goal-form");
   if (form) {
     form.addEventListener("submit", async (e) => {
@@ -5347,10 +5898,22 @@ function attachHandlers() {
       const goal = input.value.trim();
       if (!goal) return;
       const btn = document.getElementById("submit-btn");
+      const errRow = document.getElementById("goal-submit-error-row");
+      const errEl = document.getElementById("goal-submit-error");
       btn.disabled = true;
+      if (errRow) errRow.hidden = true;
       try {
         await submitGoal(goal);
-      } finally {
+        // submitGoal's own render() (via selectRun) replaces this whole form,
+        // so no manual reset needed on success.
+      } catch (err) {
+        // Deliberately no render() here — #goal-input isn't state-controlled,
+        // so a full re-render would wipe whatever the user just typed. Update
+        // the error slot directly instead.
+        if (errEl && errRow) {
+          errEl.textContent = err instanceof Error ? err.message : String(err);
+          errRow.hidden = false;
+        }
         btn.disabled = false;
       }
     });
@@ -5367,13 +5930,12 @@ function attachHandlers() {
   });
 
   document.getElementById("attach-input")?.addEventListener("change", (e) => {
-    const file = e.target.files?.[0];
-    if (file) uploadAttachment(file);
+    uploadAttachments(e.target.files);
+    e.target.value = ""; // lets picking the exact same file(s) again re-fire change
   });
 
-  document.getElementById("attachment-remove")?.addEventListener("click", () => {
-    state.attachment = null;
-    render();
+  document.querySelectorAll("[data-remove-attachment]").forEach((btn) => {
+    btn.addEventListener("click", () => removeAttachment(Number(btn.dataset.removeAttachment)));
   });
 
   const replyForm = document.getElementById("reply-form");

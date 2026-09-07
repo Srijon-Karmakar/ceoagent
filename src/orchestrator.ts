@@ -18,6 +18,7 @@ import { redditServer, REDDIT_TOOLS, isRedditConnected } from "./tools/reddit.js
 import { crmServer } from "./tools/crm.js";
 import { playbookServer } from "./tools/playbook.js";
 import { portfolioServer } from "./tools/portfolio.js";
+import { memoryServer } from "./tools/memory.js";
 import { DEPARTMENTS, buildAgentsRegistry, documentsServer, allSpecialistToolNames } from "./agents.js";
 import { getWorkspaceDir } from "./workspace.js";
 
@@ -31,14 +32,15 @@ const CEO_SYSTEM_PROMPT = `You are the CEO agent of a small automated organizati
 
 You receive a goal or signal (from an email, a request, or a direct instruction) and your job is to:
 1. Analyze it: understand what outcome is actually needed.
-2. Decide whether it needs delegation, and to whom. You can delegate to any of these specialists via the Agent tool (subagent_type):
+2. Check the system's permanent memory (list_memory_entries, optionally filtered by a query matching the goal's topic — get_memory_entry for the full text of anything relevant) for established context that bears on this goal: standing instructions, policies, key contacts, prior decisions, anything that shouldn't need repeating. Fold whatever's relevant into your own analysis and into the brief you hand off in step 4, rather than making a specialist rediscover it or you proceeding without it. Skip only when the goal is obviously self-contained and unlikely to depend on anything durable.
+3. Decide whether it needs delegation, and to whom. You can delegate to any of these specialists via the Agent tool (subagent_type):
 ${rosterDescription()}
-3. Give whoever you delegate to a clear, concrete brief — not a vague summary. You can delegate to more than one specialist for a single goal if it genuinely spans departments.
-4. Do not do specialists' work yourself (don't create Linear tasks, don't write code, don't draft documents) — that's what delegation is for. Your job is analysis, delegation, and reporting.
-5. Always call the Agent tool with run_in_background: false. Backgrounding a delegation doesn't save any time here — this app already waits for the full run before reporting back — and specialists' tool calls (Linear, documents, etc.) are unreliable when run in the background, silently returning empty results even though nothing actually failed. Only synchronous delegation gets a trustworthy result.
-6. If n8n workflow tools are available, you (not a specialist) are the one who triggers cross-cutting automations (e.g. notifying a channel, updating an external system) once delegated work is done — check list_n8n_workflows for what's available before assuming one exists. Don't invent a workflow name; only ever trigger ones that tool actually lists.
-7. After delegating (and triggering any relevant automation), summarize back to the user: what was decided, who you delegated to, and what they reported. If a specialist hit a blocker (e.g. a tool isn't configured), say so honestly rather than claiming success.
-8. When a specialist reports having sent, posted, or messaged something, only relay that as confirmed if their report cites a concrete identifier (a message ID, post ID) — a report of success with no identifier is not confirmed, and you must say so plainly (e.g. "reported as sent, but I can't confirm — no message ID came back") rather than repeating the claim as fact. This app has a known issue where a delegated specialist's tool result can go missing in transit, causing it to report success it never actually verified.
+4. Give whoever you delegate to a clear, concrete brief — not a vague summary. You can delegate to more than one specialist for a single goal if it genuinely spans departments.
+5. Do not do specialists' work yourself (don't create Linear tasks, don't write code, don't draft documents) — that's what delegation is for. Your job is analysis, delegation, and reporting.
+6. Always call the Agent tool with run_in_background: false. Backgrounding a delegation doesn't save any time here — this app already waits for the full run before reporting back — and specialists' tool calls (Linear, documents, etc.) are unreliable when run in the background, silently returning empty results even though nothing actually failed. Only synchronous delegation gets a trustworthy result.
+7. If n8n workflow tools are available, you (not a specialist) are the one who triggers cross-cutting automations (e.g. notifying a channel, updating an external system) once delegated work is done — check list_n8n_workflows for what's available before assuming one exists. Don't invent a workflow name; only ever trigger ones that tool actually lists.
+8. After delegating (and triggering any relevant automation), summarize back to the user: what was decided, who you delegated to, and what they reported. If a specialist hit a blocker (e.g. a tool isn't configured), say so honestly rather than claiming success.
+9. When a specialist reports having sent, posted, or messaged something, only relay that as confirmed if their report cites a concrete identifier (a message ID, post ID) — a report of success with no identifier is not confirmed, and you must say so plainly (e.g. "reported as sent, but I can't confirm — no message ID came back") rather than repeating the claim as fact. This app has a known issue where a delegated specialist's tool result can go missing in transit, causing it to report success it never actually verified.
 
 Be decisive. Do not ask clarifying questions unless the goal is genuinely ambiguous about scope or priority.`;
 
@@ -50,6 +52,7 @@ function buildMcpServers() {
     crm: crmServer,
     playbook: playbookServer,
     portfolio: portfolioServer,
+    memory: memoryServer,
     ...(isGmailConnected() ? { gmail: gmailServer } : {}),
     ...(isInstagramConnected() ? { instagram: instagramServer } : {}),
     ...(isLinkedinConnected() ? { linkedin: linkedinServer } : {}),
@@ -242,7 +245,7 @@ export async function runCeoAgent(goal: string, onEvent: (event: RunEvent) => vo
       tools: builtinToolNames(),
       allowedTools: allToolNames(),
       permissionMode: "dontAsk",
-      maxTurns: 20,
+      maxTurns: 40,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     },
   });
@@ -271,7 +274,7 @@ export async function runSpecialistAgent(
       tools: agent.tools ?? [],
       allowedTools: agent.tools ?? [],
       permissionMode: "dontAsk",
-      maxTurns: 20,
+      maxTurns: 40,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     },
   });

@@ -32,6 +32,7 @@ import {
   PORTFOLIO_FINANCE_TOOLS,
   PORTFOLIO_CALENDAR_TOOLS,
 } from "./tools/portfolio.js";
+import { MEMORY_READ_TOOLS, MEMORY_AGENT_TOOLS } from "./tools/memory.js";
 
 export interface DepartmentMeta {
   key: string;
@@ -59,6 +60,7 @@ export const DEPARTMENTS: DepartmentMeta[] = [
   { key: "emails", label: "Emails", icon: "mail", tagline: "Reads the connected inbox and drafts/sends email.", color: { light: "#4a3aa7", dark: "#9085e9" } },
   { key: "pr", label: "Public Relations", icon: "megaphone", tagline: "Press releases, media pitches, and public announcements.", color: { light: "#e34948", dark: "#e66767" } },
   { key: "calendar", label: "Calendar", icon: "calendar", tagline: "Schedules one-time or recurring automations for any agent.", color: { light: "#9b3fce", dark: "#b968e0" } },
+  { key: "memory", label: "Memory", icon: "brain", tagline: "Permanent, cross-agent memory — tell it something once and every agent remembers it.", color: { light: "#475569", dark: "#94a3b8" } },
 ];
 
 const DOCUMENT_AGENT_KEYS = ["hr", "analysis", "sales", "finance", "seo", "aeo", "pr", "crm"];
@@ -109,7 +111,7 @@ When given an initiative or task from the CEO:
 5. Reply with a short summary: what tasks you created (with their Linear identifiers), and any open questions or risks the CEO should know about.
 ${isN8nConnected() ? "6. If it fits the initiative (e.g. notifying a team once tasks are created), you may trigger an n8n workflow via trigger_n8n_workflow — check list_n8n_workflows first, and only ever use a name that tool actually lists.\n" : ""}
 Be concrete. Do not create vague tasks like "look into X" — specify what "done" looks like.`,
-  tools: [...LINEAR_TOOLS, ...PORTFOLIO_MANAGER_TOOLS, ...(isN8nConnected() ? N8N_TOOLS : [])],
+  tools: [...LINEAR_TOOLS, ...PORTFOLIO_MANAGER_TOOLS, ...MEMORY_READ_TOOLS, ...(isN8nConnected() ? N8N_TOOLS : [])],
   ...SYNC,
 };
 
@@ -124,7 +126,7 @@ When given a task:
 3. Write the full deliverable and save it with create_document — don't just describe it in chat.
 4. If email drafting tools are available and the task calls for it (e.g. an onboarding welcome email), draft it — never send without being explicitly told to.
 5. Reply with a short summary of what you produced and any open questions (e.g. who owns rollout, what's specific to this company that you had to assume).`,
-  tools: [docTool("hr"), ...PORTFOLIO_HR_TOOLS, ...(isGmailConnected() ? GMAIL_TOOLS : [])],
+  tools: [docTool("hr"), ...PORTFOLIO_HR_TOOLS, ...MEMORY_READ_TOOLS, ...(isGmailConnected() ? GMAIL_TOOLS : [])],
   ...SYNC,
 };
 
@@ -139,7 +141,7 @@ When given a task:
 3. Do the work directly — write files, run commands, verify what you built actually works (run it, check output) rather than assuming.
 4. Keep changes scoped to what was asked — no unrequested refactors or scope creep.
 5. Reply with a concise summary of what you built/changed and how to run or verify it.`,
-  tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", ...PORTFOLIO_DEVELOPER_TOOLS],
+  tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", ...PORTFOLIO_DEVELOPER_TOOLS, ...MEMORY_READ_TOOLS],
   ...SYNC,
 };
 
@@ -155,7 +157,7 @@ When given a task:
 4. Synthesize findings into a structured report (key findings, supporting detail, sources), saved via create_document.
 5. Be honest about uncertainty or gaps in available information — don't fabricate specifics.
 6. Reply with a short summary of your key findings and a pointer to the full document.`,
-  tools: [docTool("analysis"), ...PORTFOLIO_ANALYSIS_TOOLS, "WebSearch", "WebFetch", ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
+  tools: [docTool("analysis"), ...PORTFOLIO_ANALYSIS_TOOLS, ...MEMORY_READ_TOOLS, "WebSearch", "WebFetch", ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
   ...SYNC,
 };
 
@@ -185,6 +187,7 @@ When given a task:
     docTool("sales"),
     ...PLAYBOOK_SALES_TOOLS,
     ...PORTFOLIO_SALES_TOOLS,
+    ...MEMORY_READ_TOOLS,
     ...CRM_OUTREACH_TOOLS,
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
     ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
@@ -216,6 +219,7 @@ When given a task:
     ...CRM_TOOLS,
     docTool("crm"),
     ...PORTFOLIO_CRM_TOOLS,
+    ...MEMORY_READ_TOOLS,
     "WebSearch",
     "WebFetch",
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
@@ -238,7 +242,7 @@ When given a task:
 2. Make your assumptions explicit (currency, time period, what's included/excluded) since you have no real financial data source.
 3. Produce the actual deliverable with real structure (line items, totals, not just prose).
 4. Reply with a short summary and flag anything that needs real numbers from the CEO or a connected system before this is usable.`,
-  tools: [docTool("finance"), ...PORTFOLIO_FINANCE_TOOLS],
+  tools: [docTool("finance"), ...PORTFOLIO_FINANCE_TOOLS, ...MEMORY_READ_TOOLS],
   ...SYNC,
 };
 
@@ -268,7 +272,7 @@ ${redditPostingInstructions(5)}
 6. Log the report (and the Reddit post, if you published one) on the Marketing playbook via create_seo_playbook_item — type "ai-generative" for the report itself, with a link if there's one (e.g. the Reddit post URL); set done: true once it's actually confirmed published, not just drafted.
 6a. If this report/post is tied to a specific product/project, also log it on the Portfolio (category "blog" or "article") via create_seo_portfolio_entry — call list_portfolio_projects first and only log against a project that already exists.
 7. Reply with a short summary of your key findings and a pointer to the full document (and the Reddit post URL if you published one).`,
-  tools: [docTool("seo"), ...PLAYBOOK_SEO_TOOLS, ...PORTFOLIO_SEO_TOOLS, "WebSearch", "WebFetch", ...(isRedditConnected() ? REDDIT_TOOLS : []), ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
+  tools: [docTool("seo"), ...PLAYBOOK_SEO_TOOLS, ...PORTFOLIO_SEO_TOOLS, ...MEMORY_READ_TOOLS, "WebSearch", "WebFetch", ...(isRedditConnected() ? REDDIT_TOOLS : []), ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
   ...SYNC,
 };
 
@@ -286,7 +290,7 @@ ${redditPostingInstructions(5)}
 6. Log the report (and the Reddit post, if you published one) on the Marketing playbook via create_aeo_playbook_item — type "ai-generative" for the report itself, with a link if there's one (e.g. the Reddit post URL); set done: true once it's actually confirmed published, not just drafted.
 6a. If this report/post is tied to a specific product/project, also log it on the Portfolio (category "blog" or "article") via create_aeo_portfolio_entry — call list_portfolio_projects first and only log against a project that already exists.
 7. Reply with a short summary of your key findings and a pointer to the full document (and the Reddit post URL if you published one).`,
-  tools: [docTool("aeo"), ...PLAYBOOK_AEO_TOOLS, ...PORTFOLIO_AEO_TOOLS, "WebSearch", "WebFetch", ...(isRedditConnected() ? REDDIT_TOOLS : []), ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
+  tools: [docTool("aeo"), ...PLAYBOOK_AEO_TOOLS, ...PORTFOLIO_AEO_TOOLS, ...MEMORY_READ_TOOLS, "WebSearch", "WebFetch", ...(isRedditConnected() ? REDDIT_TOOLS : []), ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : [])],
   ...SYNC,
 };
 
@@ -302,7 +306,7 @@ When given a task:
 4. After each send_email call, check its result for a real message ID before believing it worked — a call that comes back with no ID (empty or missing output) did not confirm a send, even if no error was raised. If in doubt, verify with list_recent_emails (e.g. search in:sent for the subject) before reporting it as sent.
 5. If a confirmed-sent email is tied to a specific product/project (e.g. an outreach or announcement email), log it on the Portfolio (category "email") via create_emails_portfolio_entry — call list_portfolio_projects first and only log against a project that already exists. Include recipient, subject, and the real messageId from the send confirmation (step 4) — the Emails tab shows these as dedicated columns and exports them in its CSV, so skipping them leaves that row blank there.
 6. Reply with a short, honest summary: confirmed sends get their real message ID quoted; anything you couldn't verify gets reported as "sent but unconfirmed," never rounded up to a plain success.`,
-  tools: [...(isGmailConnected() ? GMAIL_TOOLS : []), ...PORTFOLIO_EMAILS_TOOLS],
+  tools: [...(isGmailConnected() ? GMAIL_TOOLS : []), ...PORTFOLIO_EMAILS_TOOLS, ...MEMORY_READ_TOOLS],
   ...SYNC,
 };
 
@@ -327,6 +331,7 @@ When given a task:
     docTool("pr"),
     ...PLAYBOOK_PR_TOOLS,
     ...PORTFOLIO_PR_TOOLS,
+    ...MEMORY_READ_TOOLS,
     "WebSearch",
     "WebFetch",
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
@@ -346,14 +351,31 @@ const calendarAgent: AgentDefinition = {
     "Calendar agent. Schedules other agents' (or the CEO's) work for a specific date or a recurring period, so it runs automatically without anyone needing to trigger it by hand. Can also list, edit, or cancel existing schedules.",
   prompt: `You are the Calendar agent, reporting to a CEO agent. Your job is turning a scheduling request into a real automation via create_scheduled_automation, not just describing one.
 
-Valid agentKey values: "ceo", or one of: manager, hr, developer, analysis, sales, crm, finance, seo, aeo, emails, pr, calendar.
+Valid agentKey values: "ceo", or one of: manager, hr, developer, analysis, sales, crm, finance, seo, aeo, emails, pr, calendar, memory.
 
 When given a task:
 1. Call list_scheduled_automations first if the request might overlap with something that already exists (e.g. "every Monday" when a similar weekly job may already be scheduled) — edit or cancel the existing one via update_scheduled_automation/cancel_scheduled_automation instead of creating a duplicate.
 2. Recurrence is structured, not cron syntax: "once" needs a date; "daily"/"weekly" need a startDate (and "weekly" needs weekdays); all can take an optional endDate. Pick the simplest recurrence that matches what was asked — don't invent a recurring schedule for a one-off request or vice versa.
 3. The goal you give the automation is exactly what the target agent will receive as its prompt when it fires — write it as a clear, self-contained instruction (the target agent won't see this conversation).
 4. Reply with a short confirmation: what was scheduled, for which agent, and its concrete next-fire date/time — not a vague "done."`,
-  tools: [...SCHEDULER_TOOLS, ...PORTFOLIO_CALENDAR_TOOLS],
+  tools: [...SCHEDULER_TOOLS, ...PORTFOLIO_CALENDAR_TOOLS, ...MEMORY_READ_TOOLS],
+  ...SYNC,
+};
+
+const memoryAgent: AgentDefinition = {
+  description:
+    "Memory agent. The system's permanent, cross-agent memory — durable facts fed in via chat or file upload get stored here and every other department can read them going forward. Never deletes anything; deletion is a deliberate, guarded action the user takes directly in the Memory tab's Browse view, not something reachable from a conversation.",
+  prompt: `You are the Memory agent, reporting to a CEO agent. Your job is turning what the user tells you (in chat, or in an attached file's extracted text) into durable, well-organized entries in the system's permanent memory — every other agent reads from this, so what you save here becomes part of how the whole system behaves going forward.
+
+When given a message (with or without an attached file):
+1. Read it for genuinely durable facts worth remembering forever — company details, standing instructions/preferences, policies, credentials locations, key contacts, anything that shouldn't need repeating in every future conversation. Skip anything that's clearly one-off or time-bound (e.g. "remind me tomorrow" belongs on the Calendar, not here).
+2. Call list_memory_entries first (optionally with a query matching the topic) to check whether a related entry already exists. If one does and this message adds to or corrects it, use update_memory_entry to enrich/fix it rather than creating a near-duplicate. Only create_memory_entry for something genuinely new.
+3. Split unrelated facts into separate entries with distinct, specific titles (e.g. "Refund policy" and "Primary contact for TheBetterPass" as two entries, not one blob titled "misc") — titles are how both you and other agents will find things later via list_memory_entries.
+4. If a file's extracted text is long or covers several distinct topics, don't dump it into one entry verbatim — split it into focused entries the same way, condensing boilerplate but preserving exact figures, names, and specifics rather than paraphrasing anything that could lose precision.
+5. If asked a question instead of given a fact to store (e.g. "what do you know about X"), use list_memory_entries/get_memory_entry to answer from what's actually stored — don't guess or answer from general knowledge if nothing relevant is stored, say so plainly instead.
+6. Reply with a short, concrete confirmation of exactly what you stored or updated (title by title) so the user can verify it's right — never a vague "got it, I'll remember that."
+Nothing you do here can delete an existing entry — there is no delete tool available to you, by design.`,
+  tools: MEMORY_AGENT_TOOLS,
   ...SYNC,
 };
 
@@ -372,6 +394,7 @@ export function buildAgentsRegistry(): Record<string, AgentDefinition> {
     emails: emailsAgent,
     pr: prAgent,
     calendar: calendarAgent,
+    memory: memoryAgent,
   };
 }
 

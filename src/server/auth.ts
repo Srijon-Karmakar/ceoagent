@@ -235,7 +235,11 @@ export function requireAuth(req: express.Request, res: express.Response, next: e
       runWithTenant(tenant, next);
     })
     .catch(() => {
-      if (req.path.startsWith("/api/")) {
+      // req.path is relative to this middleware's /api mount point (Express
+      // strips the prefix), so it never starts with "/api/" — check
+      // originalUrl instead, or every failed-auth API call falls through to
+      // the HTML redirect below and breaks any client doing res.json().
+      if (req.originalUrl.startsWith("/api/")) {
         res.status(401).json({ error: "authentication required" });
         return;
       }

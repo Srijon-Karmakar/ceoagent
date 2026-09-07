@@ -61,6 +61,9 @@
   --bento-lavender: #eef1fd;
   --bento-lavender-ink: #5643e6;
 
+  --memory-yellow: #a16207;
+  --memory-yellow-hover: #ca8a04;
+
   --nav-h: 64px;
   --rail-w: 76px;
   --sidebar-w: 280px;
@@ -100,6 +103,9 @@
     --bento-orange-ink: #f2f2f5;
     --bento-lavender: #211f36;
     --bento-lavender-ink: #ab9bff;
+
+    --memory-yellow: #ca8a04;
+    --memory-yellow-hover: #eab308;
   }
 }
 
@@ -113,6 +119,8 @@
   --text-muted: #a6a6b5;
   --text-faint: #6f6f7f;
   --accent: #8b7bff;
+  --memory-yellow: #ca8a04;
+  --memory-yellow-hover: #eab308;
   --accent-soft: #292352;
 
   --bento-mint: #1c1c26;
@@ -660,6 +668,71 @@ button, input, textarea {
     background: var(--accent-soft);
     color: var(--accent);
   }
+}
+
+/* Memory's header button breaks from every other header-icon-btn: no pill
+   background at all (bare icon, like Gemini's spark), a themed "darkish
+   yellow" (--memory-yellow, tuned separately per light/dark since a yellow
+   dark enough to read as muted on a light page goes muddy/invisible on a
+   near-black one), and on hover a soft breathing glow bloom behind the icon
+   — diffuse and pulsing, not a spinning border — the same ambient-light
+   feel as Gemini's own icon glow rather than this app's .ai-button "light
+   stroke" technique. */
+.header-icon-btn.memory-header-btn {
+  position: relative;
+  overflow: visible;
+  background: transparent;
+  color: var(--memory-yellow);
+}
+
+.header-icon-btn.memory-header-btn::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border-radius: 999px;
+  z-index: -1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--memory-yellow-hover) 65%, transparent) 0%,
+    color-mix(in srgb, var(--memory-yellow-hover) 30%, transparent) 45%,
+    transparent 72%
+  );
+  filter: blur(3px);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .header-icon-btn.memory-header-btn:hover,
+  .header-icon-btn.memory-header-btn.active {
+    background: transparent;
+    color: var(--memory-yellow-hover);
+  }
+
+  .header-icon-btn.memory-header-btn:hover::before {
+    opacity: 1;
+    transform: scale(1);
+    animation: memory-glow-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes memory-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.header-icon-btn.memory-header-btn.active {
+  background: transparent;
+  color: var(--memory-yellow-hover);
 }
 
 .header-date-badge {
@@ -1630,12 +1703,14 @@ button:disabled {
 .accounts-view,
 .settings-view,
 .calendar-view,
-.files-view {
+.files-view,
+.memory-hero {
   max-width: var(--content-max);
   margin: 0 auto;
 }
 
-.dashboard {
+.dashboard,
+.memory-hero {
   height: 100%;
 }
 
@@ -1960,6 +2035,14 @@ button:disabled {
 .status-badge.success { background: var(--success); }
 .status-badge.error { background: var(--error); }
 .status-badge.archived { background: var(--bg-alt); color: var(--text-muted); }
+
+.run-error-summary {
+  order: 2;
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--error);
+}
 
 .run-subheader {
   order: 4;
@@ -2667,6 +2750,246 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.guarded-delete-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text-muted) 18%);
+  border-radius: var(--radius-xs);
+  background: var(--bg);
+  padding: 8px 10px;
+  font-size: 13px;
+  margin-bottom: var(--space-4);
+}
+
+.guarded-delete-input:focus {
+  outline: none;
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 18%, transparent);
+}
+
+/* ---- Memory hero: the Memory department's entire chat surface, replacing
+   the standard composer+run-history sidebar (see isFullWidthView). No run
+   log is ever shown here — just a ripple-pulsing brain and status text
+   whose color/animation intensity tracks the real run lifecycle
+   (idle -> watching you type -> analysing while the run is actually
+   in-flight -> done once it reports back), plus a big pill input. ---- */
+
+.memory-hero {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3);
+}
+
+.memory-hero-topbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.memory-hero-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  text-align: center;
+  padding: 0 var(--space-4);
+}
+
+.memory-hero-icon-wrap {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--space-2);
+}
+
+.memory-hero-icon-wrap svg {
+  width: 84px;
+  height: 84px;
+  stroke-width: 1.5;
+  color: var(--memory-yellow-hover);
+  filter: drop-shadow(0 0 20px color-mix(in srgb, var(--memory-yellow-hover) 55%, transparent));
+  animation: memory-icon-pulse 3.2s ease-in-out infinite;
+  position: relative;
+  z-index: 1;
+}
+
+.memory-hero-ripple {
+  position: absolute;
+  inset: 22px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--memory-yellow-hover) 55%, transparent);
+  opacity: 0;
+  animation: memory-ripple 3.2s ease-out infinite;
+}
+
+.memory-hero-ripple:nth-child(2) {
+  animation-delay: 1.07s;
+}
+
+.memory-hero-ripple:nth-child(3) {
+  animation-delay: 2.14s;
+}
+
+/* "Analysing" — the underlying run is actually in flight, not a fake
+   timer — so the whole ripple/pulse speeds up to read as active thought
+   rather than the idle ambient breathing. */
+.memory-hero-icon-wrap.busy svg {
+  animation-duration: 1s;
+}
+
+.memory-hero-icon-wrap.busy .memory-hero-ripple {
+  animation-duration: 1.3s;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--memory-yellow-hover) 45%);
+}
+
+@keyframes memory-icon-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes memory-ripple {
+  0% {
+    transform: scale(0.55);
+    opacity: 0.75;
+  }
+  100% {
+    transform: scale(1.85);
+    opacity: 0;
+  }
+}
+
+/* Gemini-style flowing gradient text — same trick as the yellow header
+   glow (color-mix over a shared palette) but animated as a moving
+   linear gradient clipped to the text itself instead of a radial bloom. */
+.memory-hero-status-text {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  background: linear-gradient(90deg, var(--memory-yellow-hover), var(--accent), #60a5fa, var(--memory-yellow-hover));
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: memory-gradient-flow 5s linear infinite;
+}
+
+.memory-hero-status-text[data-status="analysing"] {
+  animation-duration: 1.4s;
+}
+
+.memory-hero-status-text[data-status="error"] {
+  background-image: linear-gradient(90deg, var(--error), #f97316, var(--error));
+}
+
+@keyframes memory-gradient-flow {
+  to {
+    background-position: 300% center;
+  }
+}
+
+.memory-hero-confirmation {
+  max-width: 480px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  animation: memory-confirmation-in 0.3s ease;
+}
+
+@keyframes memory-confirmation-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.memory-hero-composer {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding-bottom: var(--space-4);
+}
+
+.memory-hero-input-shell {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+}
+
+.memory-hero-input-shell textarea {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: none;
+  max-height: 120px;
+  padding: 6px 0;
+}
+
+.memory-hero-input-shell textarea:focus {
+  outline: none;
+}
+
+.memory-hero-input-shell textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.memory-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.memory-feed-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 0 20px;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), #4f8ef7);
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+@media (hover: hover) {
+  .memory-feed-btn:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+  }
+}
+
+.memory-feed-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .confirm-btn {
@@ -5638,12 +5961,12 @@ textarea,
 
 .run-item .goal-excerpt {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 .item-meta {
   color: var(--text-faint);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .main {
@@ -5760,7 +6083,7 @@ textarea,
 }
 
 .bento-detail-item {
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 .panels {
@@ -5928,7 +6251,6 @@ body::before {
     gap: 10px;
     min-height: 0;
     height: calc(100dvh - (var(--shell-pad-y) * 2) - 88px);
-    max-height: 760px;
   }
 
   .icon-rail {
@@ -6334,19 +6656,23 @@ html[data-theme="dark"] #nav-tooltip {
 
 .bento-orange .bento-detail-item {
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   border-radius: 0;
 }
 
 .bento-orange .bento-detail-item-head {
   color: var(--error);
-  font-size: 10px;
+  font-size: 12.5px;
+}
+
+.bento-orange .bento-detail-time {
+  font-size: 12px;
 }
 
 .bento-orange .bento-detail-goal,
 .bento-orange .bento-detail-error {
-  font-size: 9.5px;
-  line-height: 1.18;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .bento-value {
@@ -6381,7 +6707,7 @@ html[data-theme="dark"] #nav-tooltip {
 
 .bento-status-breakdown,
 .bento-dept-breakdown {
-  font-size: clamp(10px, 0.9vw, 13px);
+  font-size: clamp(12px, 1.05vw, 14px);
 }
 
 @media (max-width: 899.98px) and (min-width: 720px) {
@@ -6850,4 +7176,449 @@ html[data-theme="dark"] #nav-tooltip {
 
 .account-popover {
   z-index: 6000;
+}
+
+/* ============ Target Memory UI override ============ */
+
+@media (min-width: 720px) {
+  :root {
+    --content-max: min(1120px, 76vw);
+    --shell-pad-y: clamp(24px, 5.7vh, 58px);
+    --rail-w: 64px;
+  }
+
+  #app {
+    width: var(--content-max);
+    max-width: var(--content-max);
+    padding: var(--shell-pad-y) 0;
+  }
+
+  .app-header {
+    height: 88px;
+    width: calc(100% + var(--rail-w) + 10px);
+    margin-left: calc(-1 * (var(--rail-w) + 10px));
+    padding: 0 0 13px;
+    align-items: flex-end;
+  }
+
+  .body-row {
+    height: calc(100dvh - (var(--shell-pad-y) * 2) - 88px);
+    gap: 10px;
+    padding: 0;
+  }
+
+  .icon-rail {
+    width: var(--rail-w);
+    padding: 88px 0 0;
+  }
+
+  .nav-scroll {
+    gap: 8px;
+  }
+}
+
+.brand {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.brand-logo {
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 700;
+  background: linear-gradient(90deg, #5363ff 0%, #9da4ff 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.brand-tagline {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1;
+  color: #777b89;
+}
+
+.header-menu {
+  gap: 22px;
+}
+
+.header-menu-link {
+  padding: 0;
+  color: #111318;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.header-actions {
+  gap: 10px;
+  padding-bottom: 1px;
+}
+
+.header-icon-btn {
+  width: 40px;
+  height: 40px;
+  background: #94a2ff;
+  color: #4051be;
+}
+
+.header-icon-btn svg {
+  width: 19px;
+  height: 19px;
+}
+
+.header-icon-btn .local-icon {
+  width: 22px;
+  height: 22px;
+}
+
+#theme-toggle {
+  width: 40px;
+  height: 40px;
+}
+
+#theme-toggle .local-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.header-date-badge {
+  height: 40px;
+  min-width: 106px;
+  gap: 7px;
+  padding: 0 6px 0 12px;
+  background: rgba(207, 207, 207, 0.88);
+  color: #202331;
+  font-size: 14px;
+}
+
+.header-date-label {
+  font-size: 9px;
+}
+
+.header-date-value {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.header-date-badge svg {
+  width: 21px;
+  height: 21px;
+  padding: 2px;
+  color: #2432a2;
+}
+
+.header-user-btn {
+  width: 40px;
+  max-width: 40px;
+  height: 40px;
+  font-size: 14px;
+  background: #d8d8d8;
+  color: #555963;
+}
+
+.nav-icon {
+  width: 42px;
+  height: 42px;
+  background: rgba(190, 190, 190, 0.92);
+}
+
+.nav-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.nav-icon .local-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.memory-hero {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: clamp(18px, 3.2vh, 30px) clamp(24px, 5vw, 54px) clamp(28px, 5vh, 48px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--bg-raised);
+  box-shadow: 0 10px 30px rgba(20, 20, 40, 0.06);
+}
+
+.memory-hero-topbar {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 3;
+}
+
+.memory-hero-topbar .run-action-icon {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.memory-hero-topbar .run-action-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.memory-hero-center {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: clamp(6px, 2.4vh, 28px) 0 0;
+  gap: 8px;
+}
+
+.memory-hero-icon-wrap {
+  width: clamp(128px, 17vw, 190px);
+  height: clamp(128px, 17vw, 190px);
+  margin: 0;
+}
+
+.memory-hero-orb {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.memory-hero-orb canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.memory-hero-orb.orb-failed::before {
+  content: "";
+  position: absolute;
+  inset: 18%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 34%, rgba(76, 194, 233, 0.82), transparent 26%),
+    radial-gradient(circle at 66% 62%, rgba(156, 67, 254, 0.78), transparent 34%),
+    #1225a8;
+}
+
+.memory-hero-icon-wrap svg {
+  width: clamp(58px, 7.2vw, 84px);
+  height: clamp(58px, 7.2vw, 84px);
+  filter: none;
+  animation: memory-icon-pulse 3.2s ease-in-out infinite, memory-icon-color-cycle 6s linear infinite;
+  stroke-width: 2.6;
+}
+
+/* color only, deliberately — animating `filter: drop-shadow(...)` per
+   frame is a raster effect and the more likely source of jank than a
+   plain (GPU-composited) color animation. */
+@keyframes memory-icon-color-cycle {
+  0%,
+  100% {
+    color: #a78bfa;
+  }
+  33% {
+    color: var(--memory-yellow-hover);
+  }
+  66% {
+    color: #60a5fa;
+  }
+}
+
+.memory-hero-icon-wrap.busy svg {
+  animation-duration: 1s;
+}
+
+.memory-hero-ripple {
+  position: absolute;
+  inset: 22px;
+  border-radius: 999px;
+  border: 2px solid rgba(242, 201, 0, 0.55);
+  opacity: 0;
+  animation: memory-ripple 3.2s ease-out infinite;
+}
+
+.memory-hero-ripple:nth-child(2) {
+  animation-delay: 1.07s;
+}
+
+.memory-hero-ripple:nth-child(3) {
+  animation-delay: 2.14s;
+}
+
+.memory-hero-icon-wrap.busy .memory-hero-ripple {
+  animation-duration: 1.3s;
+  border-color: color-mix(in srgb, var(--accent) 55%, #f2c900 45%);
+}
+
+/* One gradient per hero status — deliberately just a background-position
+   animation (cheap, GPU-composited) rather than anything per-frame like an
+   animated filter/shadow, so several of these plus the icon's own animation
+   never add up to visible jank. Light-mode stops are darker/more saturated
+   than the dark-mode ones since a pastel gradient clipped to text washes
+   out on a light background; "idle" (nothing typed yet) and "error" fall
+   through to the base orange rather than getting their own named color. */
+.memory-hero-status-text {
+  margin: 0;
+  font-size: clamp(22px, 3vw, 35px);
+  font-weight: 600;
+  line-height: 1;
+  background-image: linear-gradient(90deg, #c2410c, #fb923c, #c2410c);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: memory-gradient-flow 5s linear infinite;
+}
+
+html[data-theme="dark"] .memory-hero-status-text {
+  background-image: linear-gradient(90deg, #fb923c, #fed7aa, #fb923c);
+}
+
+.memory-hero-status-text[data-status="watching"] {
+  background-image: linear-gradient(90deg, #1d4ed8, #3b82f6, #1d4ed8);
+}
+
+html[data-theme="dark"] .memory-hero-status-text[data-status="watching"] {
+  background-image: linear-gradient(90deg, #60a5fa, #bfdbfe, #60a5fa);
+}
+
+.memory-hero-status-text[data-status="analysing"] {
+  background-image: linear-gradient(90deg, #6d28d9, #8b5cf6, #6d28d9);
+  animation-duration: 1.4s;
+}
+
+html[data-theme="dark"] .memory-hero-status-text[data-status="analysing"] {
+  background-image: linear-gradient(90deg, #a78bfa, #ddd6fe, #a78bfa);
+}
+
+.memory-hero-status-text[data-status="done"] {
+  background-image: linear-gradient(90deg, #15803d, #22c55e, #15803d);
+}
+
+html[data-theme="dark"] .memory-hero-status-text[data-status="done"] {
+  background-image: linear-gradient(90deg, #4ade80, #bbf7d0, #4ade80);
+}
+
+.memory-hero-status-text[data-status="error"] {
+  background-image: linear-gradient(90deg, var(--error), #f97316, var(--error));
+}
+
+.memory-hero-confirmation {
+  margin-top: 4px;
+  max-width: min(520px, 82%);
+  color: var(--text-muted);
+}
+
+.memory-hero-composer {
+  width: min(88%, 900px);
+  max-width: 900px;
+  margin: clamp(16px, 3.2vh, 28px) auto 0;
+  padding: 0;
+}
+
+.memory-hero-input-shell {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  /* A definite height, not just a floor — the textarea inside sets
+     height:100%, and a percentage height only resolves cleanly against a
+     definite containing-block height. With min-height alone (indefinite),
+     that 100% falls back to auto, and the box quietly stops actually
+     filling this shell. */
+  height: clamp(112px, 22vh, 178px);
+  padding: clamp(14px, 2.2vw, 22px) clamp(18px, 2.4vw, 28px) 54px;
+  border: 2px solid rgba(255, 255, 255, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.35);
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+html[data-theme="dark"] .memory-hero-input-shell {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+
+.memory-hero-input-shell textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: clamp(18px, 2vw, 24px);
+  line-height: 1.32;
+  resize: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-hero-input-shell textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.memory-hero-actions {
+  position: absolute;
+  right: clamp(12px, 1.8vw, 20px);
+  bottom: 13px;
+  gap: 10px;
+}
+
+.memory-hero-actions .attach-circle {
+  width: 26px;
+  height: 26px;
+  background: #858585;
+  color: white;
+  box-shadow: none;
+}
+
+.memory-hero-actions .attach-circle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.memory-feed-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0d74ff 0%, #7c6cff 100%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.memory-feed-btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+@media (max-width: 719.98px) {
+  .memory-hero {
+    min-height: calc(100dvh - 150px);
+    padding: 26px 14px 28px;
+    border-radius: 20px;
+  }
+
+  .memory-hero-composer {
+    width: 100%;
+  }
+
+  .memory-hero-input-shell {
+    min-height: 150px;
+  }
 }

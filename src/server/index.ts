@@ -73,6 +73,12 @@ import {
   type PortfolioNoteTab,
 } from "../portfolio.js";
 import {
+  createMemoryEntry,
+  listMemoryEntries,
+  updateMemoryEntry,
+  deleteMemoryEntry,
+} from "../memory.js";
+import {
   getGmailAuthUrl,
   handleGmailCallback,
   isGmailConnected,
@@ -163,7 +169,10 @@ function defaultPort(): number {
 }
 
 const app = express();
-app.use(express.json({ limit: "256kb" }));
+// Generous headroom for bulk attachments: each parsed file caps at 50,000
+// chars (see attachments.ts's MAX_CHARS) and JSON-escaping can inflate that
+// somewhat, so a handful of files easily blew past the old 256kb default.
+app.use(express.json({ limit: "8mb" }));
 app.use(express.static(join(__dirname, "public")));
 
 const upload = multer({
@@ -221,32 +230,44 @@ interface AttachmentInput {
   truncated?: boolean;
 }
 
-function readAttachment(body: unknown): AttachmentInput | undefined {
-  const a = (body as { attachment?: unknown })?.attachment;
+function parseOneAttachment(a: unknown): AttachmentInput | undefined {
   if (!a || typeof a !== "object") return undefined;
   const { filename, text, truncated } = a as Record<string, unknown>;
   if (typeof filename !== "string" || typeof text !== "string") return undefined;
   return { filename, text, truncated: truncated === true };
 }
 
+// Accepts both the current plural `attachments` array (bulk upload) and the
+// older singular `attachment` field, so existing automation callers (n8n,
+// Zapier) that only ever sent one file keep working unchanged.
+function readAttachments(body: unknown): AttachmentInput[] {
+  const b = body as { attachment?: unknown; attachments?: unknown };
+  const list = Array.isArray(b?.attachments) ? b.attachments.map(parseOneAttachment).filter((a): a is AttachmentInput => !!a) : [];
+  const single = parseOneAttachment(b?.attachment);
+  return single ? [single, ...list] : list;
+}
+
 // The goal stored on the run record (shown in the UI — history list, run
-// header) stays short; the agent gets that same text plus the attachment
+// header) stays short; the agent gets that same text plus every attachment
 // appended, so a 50,000-character file dump never has to render as a page
 // heading.
-function buildPrompt(goal: string, attachment: AttachmentInput | undefined): string {
-  if (!attachment) return goal;
-  const note = attachment.truncated ? " (truncated)" : "";
-  return `${goal}\n\n--- Attached file: ${attachment.filename}${note} ---\n${attachment.text}\n--- end of attachment ---`;
+function buildPrompt(goal: string, attachments: AttachmentInput[]): string {
+  if (!attachments.length) return goal;
+  const blocks = attachments.map((a) => {
+    const note = a.truncated ? " (truncated)" : "";
+    return `--- Attached file: ${a.filename}${note} ---\n${a.text}\n--- end of attachment ---`;
+  });
+  return `${goal}\n\n${blocks.join("\n\n")}`;
 }
 
 // --- Runs: CEO overview (delegates to whichever specialists fit) ---
 
-function startCeoRun(goal: string, attachment: AttachmentInput | undefined) {
-  return runRunnerStartCeoRun(goal, buildPrompt(goal, attachment));
+function startCeoRun(goal: string, attachments: AttachmentInput[]) {
+  return runRunnerStartCeoRun(goal, buildPrompt(goal, attachments));
 }
 
-function startSpecialistRun(key: string, goal: string, attachment: AttachmentInput | undefined) {
-  return runRunnerStartSpecialistRun(key, goal, buildPrompt(goal, attachment));
+function startSpecialistRun(key: string, goal: string, attachments: AttachmentInput[]) {
+  return runRunnerStartSpecialistRun(key, goal, buildPrompt(goal, attachments));
 }
 
 app.post("/api/runs", (req, res) => {
@@ -255,7 +276,7 @@ app.post("/api/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startCeoRun(goal, readAttachment(req.body));
+  const record = startCeoRun(goal, readAttachments(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -272,7 +293,7 @@ app.post("/api/agents/:key/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startSpecialistRun(key, goal, readAttachment(req.body));
+  const record = startSpecialistRun(key, goal, readAttachments(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -288,7 +309,7 @@ app.post("/api/automation/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startCeoRun(goal, readAttachment(req.body));
+  const record = startCeoRun(goal, readAttachments(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -303,7 +324,7 @@ app.post("/api/automation/agents/:key/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startSpecialistRun(key, goal, readAttachment(req.body));
+  const record = startSpecialistRun(key, goal, readAttachments(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -770,6 +791,52 @@ app.patch("/api/portfolio/notes/:id", (req, res) => {
 
 app.delete("/api/portfolio/notes/:id", (req, res) => {
   const ok = deletePortfolioNote(req.params.id);
+  if (!ok) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// --- Memory: the system's permanent, cross-agent knowledge base. Entries
+// are normally fed in via the Memory department's chat (see agents.ts/
+// tools/memory.ts — a real agent decides how to structure what's said into
+// entries), but can also be added/edited directly here for pasting in a
+// document without a conversation. No agent tool can delete an entry —
+// deletion only exists here, for the Browse view's guarded (typed-
+// confirmation) delete flow.
+
+app.get("/api/memory", (req, res) => {
+  const query = typeof req.query.query === "string" ? req.query.query : undefined;
+  res.json(listMemoryEntries({ query }));
+});
+
+app.post("/api/memory", (req, res) => {
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const content = typeof req.body?.content === "string" ? req.body.content : "";
+  if (!title) {
+    res.status(400).json({ error: "title is required" });
+    return;
+  }
+  const record = createMemoryEntry({ title, content, owner: "manual", source: "manual" });
+  res.status(201).json(record);
+});
+
+app.patch("/api/memory/:id", (req, res) => {
+  const patch: Record<string, unknown> = {};
+  for (const field of ["title", "content"] as const) {
+    if (typeof req.body?.[field] === "string") patch[field] = req.body[field];
+  }
+  const record = updateMemoryEntry(req.params.id, patch);
+  if (!record) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json(record);
+});
+
+app.delete("/api/memory/:id", (req, res) => {
+  const ok = deleteMemoryEntry(req.params.id);
   if (!ok) {
     res.status(404).json({ error: "not found" });
     return;
