@@ -10,6 +10,7 @@ import {
   type PlaybookItemType,
   type PlaybookTab,
 } from "../playbook.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const typeEnum = z.enum(PLAYBOOK_ITEM_TYPES as [PlaybookItemType, ...PlaybookItemType[]]);
 
@@ -35,8 +36,8 @@ function formatItem(item: PlaybookItem): string {
  * SEO/AEO/PR only the marketing-tab tool, without trusting any of them to
  * pass the right tab themselves.
  */
-function createItemTool(agentKey: string, tab: PlaybookTab) {
-  return tool(
+function createItemToolDef(agentKey: string, tab: PlaybookTab) {
+  return defineTool(
     `create_${agentKey}_playbook_item`,
     `Add a deliverable to the ${tab} playbook — a tracked checklist of content/assets (AI-generated copy, images, carousels, videos, reels, email/script drafts) with a link, platform, and details, and a done checkbox. Use this for every deliverable you actually produce so it's tracked on the ${tab} playbook, not just described in chat.`,
     {
@@ -61,8 +62,8 @@ function createItemTool(agentKey: string, tab: PlaybookTab) {
   );
 }
 
-function listItemsTool(tab: PlaybookTab) {
-  return tool(
+function listItemsToolDef(tab: PlaybookTab) {
+  return defineTool(
     `list_${tab}_playbook_items`,
     `List items on the ${tab} playbook, optionally filtered by done status. Check this before adding a new item if there's a real risk of duplicating one already tracked.`,
     { done: z.boolean().optional() },
@@ -75,8 +76,8 @@ function listItemsTool(tab: PlaybookTab) {
   );
 }
 
-function updateItemTool(tab: PlaybookTab) {
-  return tool(
+function updateItemToolDef(tab: PlaybookTab) {
+  return defineTool(
     `update_${tab}_playbook_item`,
     `Edit an item on the ${tab} playbook by id — any of its fields, including marking it done once the deliverable is finished. Only pass the fields you want to change.`,
     {
@@ -99,14 +100,14 @@ function updateItemTool(tab: PlaybookTab) {
   );
 }
 
-const createSalesItem = createItemTool("sales", "sales");
-const createSeoItem = createItemTool("seo", "marketing");
-const createAeoItem = createItemTool("aeo", "marketing");
-const createPrItem = createItemTool("pr", "marketing");
-const listSalesItems = listItemsTool("sales");
-const listMarketingItems = listItemsTool("marketing");
-const updateSalesItem = updateItemTool("sales");
-const updateMarketingItem = updateItemTool("marketing");
+const createSalesItemDef = createItemToolDef("sales", "sales");
+const createSeoItemDef = createItemToolDef("seo", "marketing");
+const createAeoItemDef = createItemToolDef("aeo", "marketing");
+const createPrItemDef = createItemToolDef("pr", "marketing");
+const listSalesItemsDef = listItemsToolDef("sales");
+const listMarketingItemsDef = listItemsToolDef("marketing");
+const updateSalesItemDef = updateItemToolDef("sales");
+const updateMarketingItemDef = updateItemToolDef("marketing");
 
 export const PLAYBOOK_SALES_TOOLS = [
   "mcp__playbook__create_sales_playbook_item",
@@ -132,10 +133,21 @@ export const PLAYBOOK_PR_TOOLS = [
   "mcp__playbook__update_marketing_playbook_item",
 ];
 
+export const PLAYBOOK_TOOL_DEFS = [
+  createSalesItemDef,
+  createSeoItemDef,
+  createAeoItemDef,
+  createPrItemDef,
+  listSalesItemsDef,
+  listMarketingItemsDef,
+  updateSalesItemDef,
+  updateMarketingItemDef,
+];
+
 export const playbookServer = createSdkMcpServer({
   name: "playbook",
   version: "1.0.0",
   instructions:
     "Tools for tracking deliverables (AI-generated copy, images, carousels, videos, reels, email/script drafts) on the Sales and Marketing playbooks — a checklist with links, platforms, and a done status shown on the dashboard.",
-  tools: [createSalesItem, createSeoItem, createAeoItem, createPrItem, listSalesItems, listMarketingItems, updateSalesItem, updateMarketingItem],
+  tools: PLAYBOOK_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

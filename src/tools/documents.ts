@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { getWorkspaceDir } from "../workspace.js";
+import { defineTool, type ToolDef } from "../providers/toolAdapter.js";
 
 // Must live inside WORKSPACE_DIR, not the top-level data/ directory — file
 // writes outside the agent session's cwd silently no-op when made by a
@@ -91,17 +92,19 @@ export interface DocumentAgentMeta {
 }
 
 /**
- * ONE MCP server exposing one document-creation tool per department. The
- * model can't mix up departments because each tool is separately named
- * (create_hr_document, create_analysis_document, ...) and bound to its own
- * agentKey via closure — it never has to self-report which department it's
- * acting as.
+ * One document-creation-tool descriptor per department. The model can't mix
+ * up departments because each tool is separately named (create_hr_document,
+ * create_analysis_document, ...) and bound to its own agentKey via closure —
+ * it never has to self-report which department it's acting as. Shared by
+ * createDocumentsServer (Claude path) and the fallback-provider loop
+ * (src/providers/fallbackAgent.ts), which needs the same per-department
+ * descriptors converted to AI SDK tools instead of MCP ones.
  */
-export function createDocumentsServer(agents: DocumentAgentMeta[]) {
-  const tools = agents.map(({ key, label }) =>
-    tool(
+export function createDocumentToolDefs(agents: DocumentAgentMeta[]): ToolDef[] {
+  return agents.map(({ key, label }) =>
+    defineTool(
       `create_${key}_document`,
-      `Create a persisted document (markdown) as a deliverable from the ${label} agent — reports, plans, drafts, summaries. Use this for any written output that should be saved and shown on the dashboard, instead of only replying in chat.`,
+      `Create a persisted document as a deliverable from the ${label} agent - reports, plans, drafts, summaries, and spreadsheet-style tables. Use markdown for the body. Markdown tables saved here are downloadable from the dashboard as Excel (.xlsx), and every document is downloadable as a Word-compatible .doc file.`,
       {
         title: z.string().describe("Short, descriptive document title"),
         body: z.string().describe("Full document content, in markdown"),
@@ -110,17 +113,21 @@ export function createDocumentsServer(agents: DocumentAgentMeta[]) {
         const record = await addDocument(key, title, body);
         return {
           content: [
-            { type: "text" as const, text: `Document created: "${record.title}" (id: ${record.id})` },
+            { type: "text" as const, text: `Document created: "${record.title}" (id: ${record.id}). It is available in the Documents tab with DOC and XLSX downloads.` },
           ],
         };
       },
     ),
   );
+}
 
+/** ONE MCP server exposing one document-creation tool per department, for the Claude path. */
+export function createDocumentsServer(agents: DocumentAgentMeta[]) {
+  const defs = createDocumentToolDefs(agents);
   return createSdkMcpServer({
     name: "documents",
     version: "1.0.0",
     instructions: "Tools for persisting written deliverables from each specialist agent.",
-    tools,
+    tools: defs.map((d) => tool(d.name, d.description, d.shape, d.handler)),
   });
 }

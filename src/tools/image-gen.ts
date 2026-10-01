@@ -6,6 +6,7 @@ import { join, extname } from "node:path";
 import { uploadMediaToZernio } from "./zernio.js";
 import { getPostImagesDir } from "./post-images.js";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
 
@@ -150,7 +151,7 @@ function sanitizeFilename(name: string, contentType: string): string {
   return `${base}${extensionForContentType(contentType)}`;
 }
 
-const generateImageTool = tool(
+const generateImageToolDef = defineTool(
   "generate_image",
   "Generate an image from a text prompt and upload it for preview. Automatically tries OpenAI first if configured, then Hugging Face, then falls back to a free no-key provider (Pollinations) — so this always works even with no API key configured or when a paid provider is out of credit/quota. Returns a public URL — show it to the user and get explicit approval before passing it to create_zernio_post as a media entry ({url, type: \"image\"}) or to create_postiz_post as an imageUrls entry; this tool only generates, it never posts.",
   {
@@ -182,7 +183,7 @@ const generateImageTool = tool(
   },
 );
 
-const generatePostImage = tool(
+const generatePostImageDef = defineTool(
   "generate_post_image",
   "Generate an image from a text prompt and save it directly into the local post-images drop folder — for bulk-generating images ahead of scheduled/automated posting, skipping the preview-URL approval step generate_image uses. Automatically tries OpenAI first if configured, then Hugging Face, then falls back to a free no-key provider (Pollinations). Call once per image (e.g. 4 times for 4 images, with distinct filenames). After generating, use list_post_images to confirm and post_folder_image (immediately, or via a scheduled automation) to actually publish each one.",
   {
@@ -219,6 +220,8 @@ const generatePostImage = tool(
   },
 );
 
+export const IMAGE_GEN_TOOL_DEFS = [generateImageToolDef, generatePostImageDef];
+
 export const IMAGE_GEN_TOOLS = ["mcp__image_gen__generate_image", "mcp__image_gen__generate_post_image"];
 
 export const imageGenServer = createSdkMcpServer({
@@ -226,5 +229,5 @@ export const imageGenServer = createSdkMcpServer({
   version: "1.0.0",
   instructions:
     "Tools for generating AI images: generate_image for a single preview-and-approve flow, generate_post_image to save straight into the post-images folder for bulk/scheduled posting. Both automatically fall back across OpenAI -> Hugging Face -> Pollinations depending on what's configured and working, always succeeding via the free Pollinations tier at worst.",
-  tools: [generateImageTool, generatePostImage],
+  tools: IMAGE_GEN_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

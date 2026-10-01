@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { runCeoAgent } from "./orchestrator.js";
+import { runCeoAgentWithFallback } from "./providers/llmFallback.js";
 
 async function main() {
   const goal = process.argv.slice(2).join(" ").trim();
@@ -8,7 +8,7 @@ async function main() {
     process.exit(1);
   }
 
-  const result = await runCeoAgent(goal, (event) => {
+  const result = await runCeoAgentWithFallback(goal, (event) => {
     if (event.type === "text") {
       console.log(`[${event.source}] ${event.text}`);
     } else if (event.type === "tool_use") {

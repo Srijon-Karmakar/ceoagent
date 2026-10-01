@@ -1,4 +1,5 @@
-import { runCeoAgent, runSpecialistAgent, type LinearTaskRef } from "../orchestrator.js";
+import type { LinearTaskRef } from "../orchestrator.js";
+import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, type LlmProviderChoice } from "../providers/llmFallback.js";
 import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun } from "./store.js";
 import { getEnvValue } from "./settings.js";
 
@@ -69,15 +70,17 @@ export function startRun(record: { id: string }, run: () => Promise<{ linearTask
  * actually receives, which may carry more than the display goal (e.g. an
  * attachment's text, appended by the HTTP layer's `buildPrompt`).
  */
-export function startCeoRun(displayGoal: string, promptText: string) {
-  const record = createRun(displayGoal, "ceo");
-  startRun(record, () => runCeoAgent(promptText, (event) => appendEvent(record.id, event)));
+export function startCeoRun(displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
+  const record = createRun(displayGoal, "ceo", provider);
+  startRun(record, () => runCeoAgentWithFallback(promptText, (event) => appendEvent(record.id, event), undefined, provider));
   return record;
 }
 
 /** Same as `startCeoRun`, but runs one specialist directly, bypassing the CEO. */
-export function startSpecialistRun(agentKey: string, displayGoal: string, promptText: string) {
-  const record = createRun(displayGoal, agentKey);
-  startRun(record, () => runSpecialistAgent(agentKey, promptText, (event) => appendEvent(record.id, event)));
+export function startSpecialistRun(agentKey: string, displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
+  const record = createRun(displayGoal, agentKey, provider);
+  startRun(record, () =>
+    runSpecialistAgentWithFallback(agentKey, promptText, (event) => appendEvent(record.id, event), undefined, provider),
+  );
   return record;
 }

@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // Postiz is a unified scheduling/posting API — like zernio.ts, one API key
 // stands in for OAuth apps we'd otherwise build per platform, and accounts
@@ -43,7 +44,7 @@ async function fetchIntegrations(): Promise<PostizIntegration[]> {
   return Array.isArray(json) ? json : [];
 }
 
-const listPostizIntegrations = tool(
+const listPostizIntegrationsDef = defineTool(
   "list_postiz_integrations",
   "List the social accounts (channels) connected through Postiz, with their integration ID and platform. Use this first to find the integrationIds create_postiz_post needs — accounts themselves are linked via Postiz's own dashboard, not from here.",
   {},
@@ -86,7 +87,7 @@ interface PostizPostResult {
   integration?: string;
 }
 
-const createPostizPost = tool(
+const createPostizPostDef = defineTool(
   "create_postiz_post",
   "Publish (or schedule) a post to one or more connected platforms via Postiz, optionally with media. Irreversible and immediately public once sent — describe the draft (and, if there's media, the URL(s) to review) back to the user and only call this when explicitly told to post (not just draft). Look up integrationIds with list_postiz_integrations first. imageUrls accepts image OR video file URLs — Postiz treats them identically; multiple URLs renders as a carousel. Note: some platforms (Reddit, YouTube, TikTok) and Reel-specific rendering require extra per-platform settings this tool doesn't send — expect those to fail with a validation error from Postiz, or post as a normal item instead of a Reel, rather than silently posting wrong.",
   {
@@ -153,10 +154,12 @@ const createPostizPost = tool(
 
 export const POSTIZ_TOOLS = ["mcp__postiz__list_postiz_integrations", "mcp__postiz__create_postiz_post"];
 
+export const POSTIZ_TOOL_DEFS = [listPostizIntegrationsDef, createPostizPostDef];
+
 export const postizServer = createSdkMcpServer({
   name: "postiz",
   version: "1.0.0",
   instructions:
     "Tools for posting to connected social platforms via Postiz. Default to describing the draft back to the user before posting; only post directly when explicitly told to.",
-  tools: [listPostizIntegrations, createPostizPost],
+  tools: POSTIZ_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

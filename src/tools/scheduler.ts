@@ -7,6 +7,7 @@ import {
   getSchedule,
   type Recurrence,
 } from "../scheduler.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -53,7 +54,7 @@ const recurrenceShape = {
     .describe('Required when recurrenceType is "weekly" — 0=Sunday..6=Saturday'),
 };
 
-const createScheduledAutomation = tool(
+const createScheduledAutomationDef = defineTool(
   "create_scheduled_automation",
   `Schedule an automation: at a given time of day, a chosen agent (or the CEO) runs with a given goal, either once or on a recurring basis. Recurrence is structured (once/daily/weekly), not cron syntax. agentKey must be ${AGENT_KEY_HINT}. Check list_scheduled_automations first to avoid creating a duplicate of something that already exists.`,
   {
@@ -89,7 +90,7 @@ const createScheduledAutomation = tool(
   },
 );
 
-const listScheduledAutomations = tool(
+const listScheduledAutomationsDef = defineTool(
   "list_scheduled_automations",
   "List all scheduled automations, including disabled ones, with their id, label, target agent, recurrence, and last-fired date.",
   {},
@@ -104,7 +105,7 @@ const listScheduledAutomations = tool(
   },
 );
 
-const updateScheduledAutomation = tool(
+const updateScheduledAutomationDef = defineTool(
   "update_scheduled_automation",
   "Edit an existing scheduled automation by id — any of label, goal, agentKey, time, enabled, or its recurrence (pass recurrenceType plus the matching date fields to change recurrence; omit to leave recurrence unchanged).",
   {
@@ -158,7 +159,7 @@ const updateScheduledAutomation = tool(
   },
 );
 
-const cancelScheduledAutomation = tool(
+const cancelScheduledAutomationDef = defineTool(
   "cancel_scheduled_automation",
   "Cancel a scheduled automation by id — this disables it (reversible via update_scheduled_automation with enabled:true), it does not erase its history.",
   { id: z.string().describe("Schedule id, from list_scheduled_automations") },
@@ -178,10 +179,17 @@ export const SCHEDULER_TOOLS = [
   "mcp__scheduler__cancel_scheduled_automation",
 ];
 
+export const SCHEDULER_TOOL_DEFS = [
+  createScheduledAutomationDef,
+  listScheduledAutomationsDef,
+  updateScheduledAutomationDef,
+  cancelScheduledAutomationDef,
+];
+
 export const schedulerServer = createSdkMcpServer({
   name: "scheduler",
   version: "1.0.0",
   instructions:
     "Tools for scheduling other agents' work (one-time or recurring) so it runs automatically at a future date/time. list_scheduled_automations first to see what already exists before creating overlapping schedules.",
-  tools: [createScheduledAutomation, listScheduledAutomations, updateScheduledAutomation, cancelScheduledAutomation],
+  tools: SCHEDULER_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

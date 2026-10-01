@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RunEvent, LinearTaskRef } from "../orchestrator.js";
+import type { LlmProviderChoice } from "../providers/llmFallback.js";
 import { getDataDir } from "../paths.js";
 
 export interface RunRecord {
@@ -24,6 +25,13 @@ export interface RunRecord {
   /** Hidden from the default task list but not deleted — distinct from
    * `status`, which tracks execution outcome rather than visibility. */
   archived?: boolean;
+  /** Pinned tasks float to the top of the task list regardless of recency. */
+  pinned?: boolean;
+  /** Which LLM this run was pinned to from the model dropdown, or "auto" for
+   * the Claude -> OpenAI -> DeepSeek -> Ollama cascade. Persisted so a reply
+   * continues on the same provider the original run used — undefined on
+   * records created before this field existed, treated as "auto". */
+  provider?: LlmProviderChoice;
 }
 
 interface RunStore {
@@ -59,7 +67,7 @@ function persist() {
   writeFileSync(dataFile(), JSON.stringify([...getStore().runs.values()], null, 2));
 }
 
-export function createRun(goal: string, agentKey: string): RunRecord {
+export function createRun(goal: string, agentKey: string, provider: LlmProviderChoice = "auto"): RunRecord {
   const record: RunRecord = {
     id: randomUUID(),
     goal,
@@ -68,6 +76,7 @@ export function createRun(goal: string, agentKey: string): RunRecord {
     createdAt: new Date().toISOString(),
     events: [],
     linearTasks: [],
+    provider,
   };
   const store = getStore();
   store.runs.set(record.id, record);
@@ -171,6 +180,22 @@ export function unarchiveRun(id: string): boolean {
   return true;
 }
 
+export function pinRun(id: string): boolean {
+  const record = getStore().runs.get(id);
+  if (!record) return false;
+  record.pinned = true;
+  persist();
+  return true;
+}
+
+export function unpinRun(id: string): boolean {
+  const record = getStore().runs.get(id);
+  if (!record) return false;
+  record.pinned = false;
+  persist();
+  return true;
+}
+
 /** Hard delete — removes the record entirely, including its transcript and
  * cost history, and cannot be undone (callers should confirm with the user
  * first). Distinct from archiveRun, which only hides a run reversibly. */
@@ -189,7 +214,10 @@ export function getRun(id: string): RunRecord | undefined {
 }
 
 export function listRuns(): RunRecord[] {
-  return [...getStore().runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...getStore().runs.values()].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    return b.createdAt.localeCompare(a.createdAt);
+  });
 }
 
 /**

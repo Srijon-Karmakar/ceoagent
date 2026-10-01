@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { getDataDir, getTenantContext } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 function tokenFile(): string {
   return join(getDataDir(), "canva-token.json");
@@ -194,7 +195,7 @@ async function uploadAssetFromUrl(imageUrl: string, accessToken: string): Promis
   return job.asset.id;
 }
 
-const createDesign = tool(
+const createDesignDef = defineTool(
   "create_canva_design",
   "Create a new Canva design, optionally starting from an image (e.g. generate_image's output, or any public image URL). Returns an edit link for a human to open and finish the design in Canva, plus a design id for export_canva_design — this does not publish or post anything by itself.",
   {
@@ -240,7 +241,7 @@ const createDesign = tool(
   },
 );
 
-const exportDesign = tool(
+const exportDesignDef = defineTool(
   "export_canva_design",
   "Export a Canva design (by id, from create_canva_design) to a downloadable file and wait for it to finish. The returned URL expires after 24 hours — download or repost it promptly if it needs to go further (e.g. as another tool's imageUrl).",
   {
@@ -272,10 +273,12 @@ const exportDesign = tool(
 
 export const CANVA_TOOLS = ["mcp__canva__create_canva_design", "mcp__canva__export_canva_design"];
 
+export const CANVA_TOOL_DEFS = [createDesignDef, exportDesignDef];
+
 export const canvaServer = createSdkMcpServer({
   name: "canva",
   version: "1.0.0",
   instructions:
     "Tools for creating and exporting Canva designs. create_canva_design just creates a draft (with an edit link for a human to finish it) — it never publishes anything. Describe the design back to the user before calling export_canva_design.",
-  tools: [createDesign, exportDesign],
+  tools: CANVA_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // ScrapeGraphAI — AI-powered scraping/extraction API. Distinct from the
 // built-in WebSearch/WebFetch tools: those return free-text/markdown for the
@@ -31,7 +32,7 @@ const schemaParam = z
   .optional()
   .describe("Optional JSON Schema object constraining the shape of the returned json field, e.g. { type: \"object\", properties: { price: { type: \"string\" } }, required: [\"price\"] }");
 
-const extractUrl = tool(
+const extractUrlDef = defineTool(
   "scrapegraph_extract",
   "Extract structured data from a single URL using natural language, optionally constrained to a JSON Schema. Use this instead of WebFetch when the task needs specific, reliably-shaped fields (pricing, contact info, meta tags, specs) rather than a free-text summary.",
   {
@@ -60,7 +61,7 @@ const extractUrl = tool(
   },
 );
 
-const searchWeb = tool(
+const searchWebDef = defineTool(
   "scrapegraph_search",
   "AI-powered web search that fetches and returns page content for each result, optionally extracting structured data (via prompt + schema) across all results at once. Use this over WebSearch when you need actual page content alongside the results, or a structured summary distilled across several pages in one call.",
   {
@@ -105,10 +106,12 @@ const searchWeb = tool(
 
 export const SCRAPEGRAPH_TOOLS = ["mcp__scrapegraph__scrapegraph_extract", "mcp__scrapegraph__scrapegraph_search"];
 
+export const SCRAPEGRAPH_TOOL_DEFS = [extractUrlDef, searchWebDef];
+
 export const scrapegraphServer = createSdkMcpServer({
   name: "scrapegraph",
   version: "1.0.0",
   instructions:
     "Tools for AI-powered structured web extraction (scrapegraph_extract) and search-with-content (scrapegraph_search) via ScrapeGraphAI. Prefer these over WebFetch/WebSearch when the task needs specific, reliably-shaped fields rather than a free-text summary.",
-  tools: [extractUrl, searchWeb],
+  tools: SCRAPEGRAPH_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

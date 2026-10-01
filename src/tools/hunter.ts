@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // Hunter.io — email finder/verifier. Simple API-key auth (query param or
 // header, both work; confirmed against hunter.io/api-documentation,
@@ -28,7 +29,7 @@ function hunterErrorText(status: number, body: HunterErrorBody): string {
   return `Hunter error ${status}${details ? `: ${details}` : ""}`;
 }
 
-const domainSearch = tool(
+const domainSearchDef = defineTool(
   "hunter_domain_search",
   "Find email addresses associated with a company's domain — returns each address with a confidence score and, when known, the person's name and job title. Use this to find real contacts at a prospect company before drafting outreach, instead of guessing an address format.",
   {
@@ -63,7 +64,7 @@ const domainSearch = tool(
   },
 );
 
-const findEmail = tool(
+const findEmailDef = defineTool(
   "hunter_find_email",
   "Find the most likely email address for a specific person at a company, given their name and the company's domain. Returns a confidence score — treat anything below ~50 as a guess, not a verified contact.",
   {
@@ -105,10 +106,12 @@ const findEmail = tool(
 
 export const HUNTER_TOOLS = ["mcp__hunter__hunter_domain_search", "mcp__hunter__hunter_find_email"];
 
+export const HUNTER_TOOL_DEFS = [domainSearchDef, findEmailDef];
+
 export const hunterServer = createSdkMcpServer({
   name: "hunter",
   version: "1.0.0",
   instructions:
     "Tools for finding real contact emails via Hunter.io: hunter_domain_search for all known emails at a company, hunter_find_email for one specific person. Prefer these over guessing an email format.",
-  tools: [domainSearch, findEmail],
+  tools: HUNTER_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

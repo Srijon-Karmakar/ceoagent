@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // Zernio is a unified API for posting/messaging across many social and
 // messaging platforms (X, Instagram, Facebook, LinkedIn, TikTok, YouTube,
@@ -103,7 +104,7 @@ export async function publishZernioPost({ content, platforms, media }: PublishZe
   return { id: json.post?._id ?? "unknown", status: json.post?.status ?? "unknown" };
 }
 
-const listZernioAccounts = tool(
+const listZernioAccountsDef = defineTool(
   "list_zernio_accounts",
   "List the social/messaging accounts connected through Zernio, with their platform and account ID. Use this first to find the accountId values create_zernio_post needs — accounts themselves are linked via Zernio's own dashboard, not from here.",
   {},
@@ -117,7 +118,7 @@ const listZernioAccounts = tool(
   },
 );
 
-const createZernioPost = tool(
+const createZernioPostDef = defineTool(
   "create_zernio_post",
   "Publish a post to one or more connected platforms via Zernio, optionally with media. Irreversible and immediately public once sent — describe the draft (and, if there's media, the URL(s) to review) back to the user and only call this when explicitly told to post (not just draft). Look up accountId values with list_zernio_accounts first. Instagram in particular requires media — it has no text-only post type. Pass multiple `type: \"image\"` entries for a carousel (Instagram allows up to 10), or exactly one `type: \"video\"` entry for a video/Reel post — don't mix image and video entries in the same call, most platforms reject that combination.",
   {
@@ -160,7 +161,7 @@ const createZernioPost = tool(
   },
 );
 
-const listZernioConversations = tool(
+const listZernioConversationsDef = defineTool(
   "list_zernio_conversations",
   "List recent DM/message conversations across connected Zernio accounts, for context before replying.",
   {},
@@ -185,7 +186,7 @@ const listZernioConversations = tool(
   },
 );
 
-const sendZernioMessage = tool(
+const sendZernioMessageDef = defineTool(
   "send_zernio_message",
   "Send a DM reply in an existing Zernio conversation. Irreversible once sent — only call this when explicitly told to send (not just draft). Find conversationId via list_zernio_conversations.",
   {
@@ -214,10 +215,12 @@ export const ZERNIO_TOOLS = [
   "mcp__zernio__send_zernio_message",
 ];
 
+export const ZERNIO_TOOL_DEFS = [listZernioAccountsDef, createZernioPostDef, listZernioConversationsDef, sendZernioMessageDef];
+
 export const zernioServer = createSdkMcpServer({
   name: "zernio",
   version: "1.0.0",
   instructions:
     "Tools for posting and messaging across connected social/messaging platforms via Zernio. Default to describing the draft back to the user before posting or sending a message; only act directly when explicitly told to.",
-  tools: [listZernioAccounts, createZernioPost, listZernioConversations, sendZernioMessage],
+  tools: ZERNIO_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

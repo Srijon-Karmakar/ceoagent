@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const LINEAR_API_URL = "https://api.linear.app/graphql";
 
@@ -26,7 +27,7 @@ async function linearRequest<T>(query: string, variables: Record<string, unknown
   return json.data as T;
 }
 
-const createLinearTask = tool(
+const createLinearTaskDef = defineTool(
   "create_linear_task",
   "Create a task (issue) in Linear and assign it. Use this to hand work to a human or team.",
   {
@@ -79,7 +80,7 @@ const createLinearTask = tool(
   },
 );
 
-const listLinearTasks = tool(
+const listLinearTasksDef = defineTool(
   "list_linear_tasks",
   "List recent tasks (issues) in Linear, optionally filtered by team.",
   {
@@ -119,11 +120,13 @@ const listLinearTasks = tool(
   },
 );
 
+export const LINEAR_TOOL_DEFS = [createLinearTaskDef, listLinearTasksDef];
+
 export const linearServer = createSdkMcpServer({
   name: "linear",
   version: "1.0.0",
   instructions: "Tools for creating and listing tasks in Linear, the team's task tracker.",
-  tools: [createLinearTask, listLinearTasks],
+  tools: LINEAR_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });
 
 export const LINEAR_TOOLS = ["mcp__linear__create_linear_task", "mcp__linear__list_linear_tasks"];

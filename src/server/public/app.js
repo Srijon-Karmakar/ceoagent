@@ -1,7 +1,7 @@
 // ---------- State ----------
 
 const state = {
-  view: { type: "overview" }, // {type:"overview"} | {type:"department", key} | {type:"accounts"}
+  view: { type: "overview" }, // {type:"overview"} | {type:"department", key} | utility views such as accounts/documents/files
   theme: "light", // "light" | "dark" — set for real in initTheme() before first render
   departments: [],
   accounts: [],
@@ -18,9 +18,12 @@ const state = {
   logNearBottom: true, // whether the log feed should auto-follow new events
   toolOverrides: new Map(), // toolUseId -> explicit user expand/collapse choice
   goalExpanded: false, // whether the run-detail header shows the full goal text or a clamped preview
-  attachments: [], // { filename, text, truncated }[] — parsed files pending on the goal form
+  attachments: [], // { filename, text, truncated, path? }[] — parsed files pending on the goal form; path is set for .html/.htm uploads (workspace-relative, for import_email_template_from_file)
   attaching: false, // true while an upload (or batch of uploads) is being parsed server-side
   attachError: null, // error message from the most recent failed upload(s), cleared on next attempt
+  goalDrafts: {}, // goalDraftKey(view) -> in-progress #goal-input text, kept per-view so switching tabs (which re-renders the composer) doesn't lose what you were typing
+  selectedModel: "auto", // "auto" | "claude" | "openai" | "deepseek" | "ollama" — model-picker dropdown on the goal composer; "auto" is today's Claude->OpenAI->DeepSeek->Ollama cascade, anything else pins to that one model with no fallback
+  modelPickerOpen: false, // whether the model-picker's popover menu (triggered by the cpu icon button) is currently showing
   memoryHeroError: null, // error message from a failed "Feed Me" submit (e.g. request too large), cleared on next attempt
   confirmModal: null, // { title, message, confirmLabel, danger, onConfirm } | null
   schedules: [], // ScheduleRecord[] from /api/schedule — loaded when the Calendar department view is active
@@ -85,8 +88,6 @@ const state = {
 let eventSource = null;
 let lastRenderKey = null;
 let memoryOrbCleanup = null;
-let memoryOrbModulePromise = null;
-let memoryOrbMountToken = 0;
 const AUTH_STORAGE_KEY = "ceo_agent_supabase_session";
 
 const NAV_STATIC = {
@@ -96,6 +97,7 @@ const NAV_STATIC = {
   tools: { key: "tools", label: "Tools", icon: "wrench" },
   settings: { key: "settings", label: "Settings", icon: "settings" },
   portfolio: { key: "portfolio", label: "Portfolio", icon: "briefcase" },
+  documents: { key: "documents", label: "Documents", icon: "file-text" },
 };
 
 // Shared by render() and renderNav() — Accounts/Files/Settings/Tools are
@@ -111,6 +113,7 @@ function isFullWidthView(view) {
     view.type === "files" ||
     view.type === "settings" ||
     view.type === "tools" ||
+    view.type === "documents" ||
     view.type === "playbook" ||
     view.type === "content-calendar" ||
     view.type === "portfolio" ||
@@ -213,6 +216,17 @@ const LEAD_STAGE_LABELS = {
   won: "Won",
   lost: "Lost",
 };
+
+// Mirrors PROVIDER_ORDER/PROVIDER_LABELS in src/providers/llmFallback.ts — kept
+// as a small local literal since the frontend has no build-time import of the
+// backend's provider module. "auto" (today's cascade) is always the default.
+const MODEL_OPTIONS = [
+  { value: "auto", label: "Auto", description: "Claude → OpenAI → DeepSeek → Ollama" },
+  { value: "claude", label: "Claude" },
+  { value: "openai", label: "OpenAI" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "ollama", label: "Ollama (local)" },
+];
 
 const PLAYBOOK_ITEM_TYPES = ["ai-generative", "image", "carousel", "video", "reel", "email-script"];
 const PLAYBOOK_TYPE_LABELS = {
@@ -534,6 +548,7 @@ function deptColor(key) {
 
 function sourceLabel(source) {
   if (source === "ceo") return "CEO";
+  if (source === "user") return "You";
   return departmentMeta(source)?.label ?? capitalize(source);
 }
 
@@ -562,11 +577,25 @@ function isMobileLayout() {
   return window.matchMedia?.(MOBILE_LAYOUT_QUERY).matches ?? false;
 }
 
+// Matches the CSS `@media (min-width: 860px)` breakpoint that shows
+// .header-menu (File/Settings/Portfolio/Documents/Accounts/Tools). Below
+// it .header-menu is display:none with no replacement, so those 6
+// destinations were unreachable on any phone and most tablets — this
+// flag drives folding the same links into the sidebar instead (see
+// renderSidebar), which is already visible there (an off-canvas drawer
+// below 720px, a permanent column from 720-859px).
+const NAV_COLLAPSED_QUERY = "(max-width: 859.98px)";
+
+function isNavCollapsed() {
+  return window.matchMedia?.(NAV_COLLAPSED_QUERY).matches ?? false;
+}
+
 // Re-render only when crossing the breakpoint (not on every resize pixel),
 // so the composer hops between .sidebar and .main as the viewport crosses
 // 720px without spamming re-renders.
 function initResponsiveLayout() {
   window.matchMedia?.(MOBILE_LAYOUT_QUERY).addEventListener("change", () => render());
+  window.matchMedia?.(NAV_COLLAPSED_QUERY).addEventListener("change", () => render());
 }
 
 function toggleTheme() {
@@ -574,6 +603,12 @@ function toggleTheme() {
   localStorage.setItem("theme", state.theme);
   document.documentElement.setAttribute("data-theme", state.theme);
   render(); // chart colors and department accents are theme-dependent — full re-render
+}
+
+// Identifies a view for the purpose of keying state.goalDrafts — distinct
+// departments/playbooks each get their own draft slot.
+function goalDraftKey(view) {
+  return `${view.type}:${view.key ?? ""}`;
 }
 
 function viewLabel() {
@@ -654,6 +689,20 @@ async function unarchiveRun(id) {
     state.selectedRunId = null;
     state.selectedRun = null;
   }
+  render();
+}
+
+async function pinRun(id) {
+  await fetchJSON(`/api/runs/${id}/pin`, { method: "POST" });
+  await loadRunsForCurrentView();
+  if (state.selectedRun && state.selectedRun.id === id) state.selectedRun.pinned = true;
+  render();
+}
+
+async function unpinRun(id) {
+  await fetchJSON(`/api/runs/${id}/unpin`, { method: "POST" });
+  await loadRunsForCurrentView();
+  if (state.selectedRun && state.selectedRun.id === id) state.selectedRun.pinned = false;
   render();
 }
 
@@ -746,6 +795,8 @@ function renderGuardedDeleteModal() {
 async function loadDocumentsForCurrentView() {
   if (state.view.type === "department") {
     state.documents = await fetchJSON(`/api/documents?agentKey=${encodeURIComponent(state.view.key)}`);
+  } else if (state.view.type === "documents") {
+    state.documents = await fetchJSON("/api/documents");
   } else {
     state.documents = [];
   }
@@ -1166,15 +1217,23 @@ function memoryHeroStatus() {
   }
   if (state.memoryHeroSubmitting) return "analysing";
   if (state.memoryHeroInput.trim()) return "watching";
-  return "idle";
+  return "thinking";
 }
 
 const MEMORY_HERO_STATUS_TEXT = {
-  idle: "The Brain",
+  thinking: "The Brain",
   watching: "Watching…",
   analysing: "Analysing…",
   done: "Done..",
   error: "Hmm, that didn't work",
+};
+
+const MEMORY_HERO_LOTTIE_MARKERS = {
+  thinking: "jump",
+  watching: "alert",
+  analysing: "thinking",
+  done: "yes",
+  error: "no",
 };
 
 // The Memory agent's prompt (agents.ts) always ends its reply with a short,
@@ -1198,18 +1257,19 @@ async function submitGoal(goal) {
   // server appends each attachment's text only to what the agent receives,
   // so a large file dump never ends up rendered as a run's heading.
   const attachments = state.attachments.length ? state.attachments : undefined;
+  const provider = state.selectedModel || "auto";
   let id;
   if (state.view.type === "overview") {
     ({ id } = await fetchJSON("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, attachments }),
+      body: JSON.stringify({ goal, attachments, provider }),
     }));
   } else if (state.view.type === "department") {
     ({ id } = await fetchJSON(`/api/agents/${state.view.key}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, attachments }),
+      body: JSON.stringify({ goal, attachments, provider }),
     }));
   } else {
     return;
@@ -1256,7 +1316,7 @@ async function uploadAttachments(fileList) {
         throw new Error(`Upload failed (${res.status})`);
       }
       if (!res.ok) throw new Error(data?.error ?? `Upload failed (${res.status})`);
-      return { filename: data.filename, text: data.text, truncated: data.truncated };
+      return { filename: data.filename, text: data.text, truncated: data.truncated, path: data.path };
     }),
   );
 
@@ -1798,6 +1858,7 @@ function render() {
   destroyMemoryOrb();
   const showSidebar = !isFullWidthView(state.view);
   const mobile = isMobileLayout();
+  const navCollapsed = isNavCollapsed();
   app.innerHTML = `
     <div class="layout">
       ${renderIconRail()}
@@ -1805,7 +1866,7 @@ function render() {
         ${renderHeader(mobile)}
         <div class="body-row">
           ${showSidebar ? `<div class="sidebar-backdrop${state.sidebarOpen ? " open" : ""}" id="sidebar-backdrop"></div>` : ""}
-          ${showSidebar ? renderSidebar(mobile) : ""}
+          ${showSidebar ? renderSidebar(mobile, navCollapsed) : ""}
           <main class="main">
             ${showSidebar && mobile ? renderComposer() : ""}
             ${renderMain()}
@@ -1939,7 +2000,6 @@ function renderControlIcon(icon, label) {
 }
 
 function destroyMemoryOrb() {
-  memoryOrbMountToken += 1;
   if (memoryOrbCleanup) {
     memoryOrbCleanup();
     memoryOrbCleanup = null;
@@ -1949,22 +2009,46 @@ function destroyMemoryOrb() {
 function initMemoryOrb() {
   const container = document.getElementById("memory-hero-orb");
   if (!container) return;
-  const token = ++memoryOrbMountToken;
-  memoryOrbModulePromise ??= import("/memoryOrb.js");
-  memoryOrbModulePromise
-    .then(({ mountMemoryOrb }) => {
-      if (token !== memoryOrbMountToken || !container.isConnected) return;
-      memoryOrbCleanup = mountMemoryOrb(container, {
-        hue: Number(container.dataset.hue || 0),
-        hoverIntensity: Number(container.dataset.hoverIntensity || 2),
-        rotateOnHover: container.dataset.rotateOnHover !== "false",
-        forceHoverState: container.dataset.forceHoverState === "true",
-        backgroundColor: container.dataset.backgroundColor || "#000000",
-      });
-    })
-    .catch(() => {
-      container.classList.add("orb-failed");
-    });
+  if (!window.lottie) {
+    container.classList.add("orb-failed");
+    return;
+  }
+
+  const animation = window.lottie.loadAnimation({
+    container,
+    renderer: "svg",
+    loop: true,
+    autoplay: false,
+    path: "/AI_animation/AI.json",
+    rendererSettings: {
+      preserveAspectRatio: "xMidYMid meet",
+      progressiveLoad: true,
+    },
+  });
+
+  const playStatusSegment = () => {
+    const markerName = MEMORY_HERO_LOTTIE_MARKERS[memoryHeroStatus()] || "jump";
+    if (container.dataset.lottieMarker === markerName) return;
+    const marker = animation.animationData?.markers?.find((m) => m.cm === markerName);
+    if (!marker) return;
+    container.dataset.lottieMarker = markerName;
+    const start = marker.tm;
+    const end = marker.tm + marker.dr;
+    // The idle "jump" bounce reads as a nervous tic on an infinite loop —
+    // every other state (watching/analysing/done/error) is meant to hold
+    // its loop until the status changes again, but idle plays its bounce
+    // twice and then just holds its last frame. lottie-web's `loop`
+    // accepts a play count, not just a boolean, for exactly this.
+    animation.loop = markerName === "jump" ? 2 : true;
+    animation.playSegments([start, end], true);
+  };
+
+  animation.addEventListener("DOMLoaded", playStatusSegment);
+  container._memoryLottiePlayStatus = playStatusSegment;
+  memoryOrbCleanup = () => {
+    delete container._memoryLottiePlayStatus;
+    animation.destroy();
+  };
 }
 
 function syncMemoryHeroInputUi() {
@@ -1977,7 +2061,10 @@ function syncMemoryHeroInputUi() {
   const submitBtn = document.getElementById("memory-hero-submit");
   if (submitBtn) submitBtn.disabled = state.memoryHeroSubmitting || state.attaching || !state.memoryHeroInput.trim();
   const orb = document.getElementById("memory-hero-orb");
-  if (orb) orb.dataset.forceHoverState = "false";
+  if (orb) {
+    orb.dataset.status = status;
+    orb._memoryLottiePlayStatus?.();
+  }
 }
 
 function navButton(key, label, icon, isActive, viewObj, accentColor) {
@@ -2041,6 +2128,19 @@ function todayLabel() {
   return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
 }
 
+// Shared with renderSidebarNavLinks() below — .header-menu (CSS
+// `@media (min-width:860px)`) is the only place these 6 destinations are
+// reachable, so anything narrower needs the same list folded into the
+// sidebar instead of duplicating it by hand in two places.
+const NAV_MENU_ITEMS = [
+  { type: "files", label: "File" },
+  { type: "settings", label: "Settings" },
+  { type: "portfolio", label: "Portfolio" },
+  { type: "documents", label: "Documents" },
+  { type: "accounts", label: "Accounts" },
+  { type: "tools", label: "Tools" },
+];
+
 // Persistent top bar: brand mark, a text-menu shortcut to three existing
 // full-width views (Files/Settings/Accounts — same switchView() as their
 // icon-rail buttons, just a second entry point), the theme toggle, and the
@@ -2056,11 +2156,10 @@ function renderHeader(mobile) {
         <span class="brand-tagline">${escapeHtml(brandTagline())}</span>
       </div>
       <nav class="header-menu">
-        <button type="button" class="header-menu-link${state.view.type === "files" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "files" }))}'>File</button>
-        <button type="button" class="header-menu-link${state.view.type === "settings" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "settings" }))}'>Settings</button>
-        <button type="button" class="header-menu-link${state.view.type === "portfolio" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "portfolio" }))}'>Portfolio</button>
-        <button type="button" class="header-menu-link${state.view.type === "accounts" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "accounts" }))}'>Accounts</button>
-        <button type="button" class="header-menu-link${state.view.type === "tools" ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: "tools" }))}'>Tools</button>
+        ${NAV_MENU_ITEMS.map(
+          (item) =>
+            `<button type="button" class="header-menu-link${state.view.type === item.type ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: item.type }))}'>${item.label}</button>`,
+        ).join("")}
       </nav>
       <div class="header-actions">
         ${
@@ -2075,7 +2174,7 @@ function renderHeader(mobile) {
           <i data-lucide="brain"></i>
         </button>
         <div class="playbook-menu">
-          <button type="button" class="header-icon-btn${state.view.type === "playbook" ? " active" : ""}" data-label="Playbook" aria-label="Playbook">
+          <button type="button" id="playbook-menu-btn" class="header-icon-btn${state.view.type === "playbook" ? " active" : ""}" data-label="Playbook" aria-label="Playbook" aria-haspopup="menu">
             ${renderControlIcon("playbook.webp", "Playbook")}
           </button>
           <div class="playbook-menu-popover" role="menu">
@@ -2101,7 +2200,7 @@ function renderHeader(mobile) {
           <i data-lucide="calendar"></i>
         </button>
         <div class="header-account">
-          <button type="button" class="header-user-btn" aria-label="Account details">
+          <button type="button" id="account-menu-btn" class="header-user-btn" aria-label="Account details" aria-haspopup="menu">
             <span>${escapeHtml((state.auth.user?.name || state.auth.user?.email || "A").slice(0, 1).toUpperCase())}</span>
           </button>
           <div class="account-popover" role="tooltip">
@@ -2163,6 +2262,7 @@ function renderAttachmentRow() {
 }
 
 function renderGoalActions() {
+  const selectedLabel = MODEL_OPTIONS.find((o) => o.value === state.selectedModel)?.label ?? "Auto";
   return `
     <div class="goal-actions">
       <button type="button" class="attach-circle" id="attach-btn" ${state.attaching ? "disabled" : ""} aria-label="Attach file">
@@ -2171,6 +2271,9 @@ function renderGoalActions() {
             ? `<i data-lucide="loader-circle"></i>`
             : renderControlIcon("attach.webp", "Attach file")
         }
+      </button>
+      <button type="button" class="attach-circle model-picker-btn${state.modelPickerOpen ? " open" : ""}" id="model-picker-btn" aria-label="Model: ${escapeHtml(selectedLabel)}" aria-haspopup="menu" aria-expanded="${state.modelPickerOpen}">
+        <i data-lucide="cpu"></i>
       </button>
       <input type="file" id="attach-input" accept="${ATTACH_ACCEPT}" multiple hidden />
       <span class="ai-button-wrap">
@@ -2206,7 +2309,7 @@ function renderComposer() {
 
       <form id="goal-form">
         <div class="goal-input-shell">
-          <textarea id="goal-input" placeholder="${placeholder}" rows="4" required></textarea>
+          <textarea id="goal-input" placeholder="${placeholder}" rows="4" required>${escapeHtml(state.goalDrafts[goalDraftKey(state.view)] ?? "")}</textarea>
         </div>
         ${renderAttachmentRow()}
         <div class="attachment-row" id="goal-submit-error-row" hidden><span class="attachment-error" id="goal-submit-error"></span></div>
@@ -2220,18 +2323,42 @@ function renderRunActionIcons(run) {
   const archiveIcon = run.archived
     ? `<button type="button" class="run-action-icon" data-unarchive-run="${run.id}" data-label="Unarchive" aria-label="Unarchive"><i data-lucide="archive-restore"></i></button>`
     : `<button type="button" class="run-action-icon" data-archive-run="${run.id}" data-label="Archive" aria-label="Archive" ${run.status === "running" ? "disabled" : ""}><i data-lucide="archive"></i></button>`;
+  const pinIcon = run.pinned
+    ? `<button type="button" class="run-action-icon run-action-active" data-unpin-run="${run.id}" data-label="Unpin" aria-label="Unpin"><i data-lucide="pin-off"></i></button>`
+    : `<button type="button" class="run-action-icon" data-pin-run="${run.id}" data-label="Pin" aria-label="Pin"><i data-lucide="pin"></i></button>`;
   return `
     <span class="run-item-actions">
+      ${pinIcon}
       ${archiveIcon}
       <button type="button" class="run-action-icon run-action-danger" data-delete-run="${run.id}" data-label="Delete" aria-label="Delete" ${run.status === "running" ? "disabled" : ""}><i data-lucide="trash-2"></i></button>
     </span>
   `;
 }
 
-function renderSidebar(mobile) {
+// Below the CSS `@media (min-width:860px)` breakpoint, .header-menu
+// (File/Settings/Portfolio/Documents/Accounts/Tools) is hidden with
+// nothing replacing it — this folds the same destinations into the
+// sidebar instead, which is already visible there (an off-canvas drawer
+// below 720px, opened by the hamburger; a permanent column from
+// 720-859px). Reuses the plain [data-nav] delegation everything else on
+// the page uses, so tapping one navigates and — since switchView()
+// already resets state.sidebarOpen — closes the drawer for free.
+function renderSidebarNavLinks() {
+  return `
+    <nav class="sidebar-nav-links">
+      ${NAV_MENU_ITEMS.map(
+        (item) =>
+          `<button type="button" class="sidebar-nav-link${state.view.type === item.type ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify({ type: item.type }))}'>${item.label}</button>`,
+      ).join("")}
+    </nav>
+  `;
+}
+
+function renderSidebar(mobile, navCollapsed) {
   return `
     <aside class="sidebar${state.sidebarOpen ? " open" : ""}" id="sidebar">
       ${mobile ? "" : renderComposer()}
+      ${navCollapsed ? renderSidebarNavLinks() : ""}
 
       <div class="tasklist-card">
         <div class="tasks-header">
@@ -2244,10 +2371,11 @@ function renderSidebar(mobile) {
           ${state.runs
             .map(
               (run) => `
-            <li class="run-item${run.id === state.selectedRunId ? " selected" : ""}" data-run-id="${run.id}">
+            <li class="run-item${run.id === state.selectedRunId ? " selected" : ""}${run.pinned ? " pinned" : ""}" data-run-id="${run.id}">
               <span class="run-checkbox"></span>
               <span class="run-item-body">
                 <span class="goal-excerpt">
+                  ${run.pinned ? `<i data-lucide="pin" class="pinned-flag" title="Pinned"></i>` : ""}
                   <span class="goal-excerpt-text">${escapeHtml(run.goal)}</span>
                   <span class="status-dot ${run.status}" title="${escapeHtml(statusLabel(run.status))}"></span>
                 </span>
@@ -2270,6 +2398,7 @@ function renderMain() {
   if (state.view.type === "tools") return renderToolsView();
   if (state.view.type === "files") return renderFilesView();
   if (state.view.type === "settings") return renderSettingsView();
+  if (state.view.type === "documents") return renderDocumentsView();
   if (state.view.type === "portfolio") return renderPortfolioView();
   if (state.view.type === "memory-browse") return renderMemoryBrowseView();
   if (state.view.type === "department" && state.view.key === "memory") return renderMemoryHero();
@@ -2454,9 +2583,15 @@ function renderRunDetail() {
       <header class="run-header">
         <span class="status-badge ${run.status}">${statusLabel(run.status)}</span>
         ${run.archived ? `<span class="status-badge archived">Archived</span>` : ""}
+        ${run.pinned ? `<span class="status-badge pinned">Pinned</span>` : ""}
         <span class="run-meta">${run.costUsd != null ? `$${run.costUsd.toFixed(4)}` : ""}</span>
         ${run.status === "error" && run.summary ? `<p class="run-error-summary">${escapeHtml(run.summary)}</p>` : ""}
         <div class="run-actions">
+          ${
+            run.pinned
+              ? `<button type="button" class="run-action-btn run-action-active" data-unpin-run="${run.id}" data-label="Unpin" aria-label="Unpin"><i data-lucide="pin-off"></i></button>`
+              : `<button type="button" class="run-action-btn" data-pin-run="${run.id}" data-label="Pin" aria-label="Pin"><i data-lucide="pin"></i></button>`
+          }
           ${
             run.archived
               ? `<button type="button" class="run-action-btn" data-unarchive-run="${run.id}" data-label="Unarchive" aria-label="Unarchive"><i data-lucide="archive-restore"></i></button>`
@@ -2637,6 +2772,46 @@ function renderDocuments() {
         `<li class="doc-item" data-doc-id="${d.id}"><strong>${escapeHtml(d.title)}</strong><br><span class="item-meta">${formatTime(d.createdAt)}</span></li>`,
     )
     .join("");
+}
+
+function renderDocumentsView() {
+  const docs = state.documents ?? [];
+  return `
+    <div class="documents-view">
+      <div class="dashboard-head">
+        <h2>Documents</h2>
+        <p class="dept-tagline">Saved reports, drafts, policies, proposals, and analysis deliverables from every department.</p>
+      </div>
+      ${
+        docs.length
+          ? `<div class="documents-list">
+              ${docs
+                .map((d) => {
+                  const agent = departmentMeta(d.agentKey);
+                  const label = agent?.label ?? capitalize(d.agentKey);
+                  const color = agent?.color[state.theme] ?? "var(--accent)";
+                  return `
+                    <div class="document-card" style="--doc-accent:${color}">
+                      <button type="button" class="document-card-main doc-item" data-doc-id="${d.id}">
+                        <span class="document-card-icon"><i data-lucide="file-text"></i></span>
+                        <span class="document-card-body">
+                          <strong>${escapeHtml(d.title)}</strong>
+                          <span>${escapeHtml(label)} · ${formatTime(d.createdAt)}</span>
+                        </span>
+                      </button>
+                      <span class="document-card-actions">
+                        <a href="/api/documents/${encodeURIComponent(d.id)}/download?format=doc" download data-label="Download DOC" aria-label="Download DOC"><i data-lucide="file-text"></i><span>DOC</span></a>
+                        <a href="/api/documents/${encodeURIComponent(d.id)}/download?format=xlsx" download data-label="Download Excel" aria-label="Download Excel"><i data-lucide="file-spreadsheet"></i><span>XLSX</span></a>
+                      </span>
+                    </div>
+                  `;
+                })
+                .join("")}
+            </div>`
+          : `<div class="empty-state"><p>No documents saved yet.</p></div>`
+      }
+    </div>
+  `;
 }
 
 function renderAccountsView() {
@@ -4988,11 +5163,7 @@ function renderMemoryHero() {
           <div
             class="memory-hero-orb"
             id="memory-hero-orb"
-            data-hue="238"
-            data-hover-intensity="0"
-            data-rotate-on-hover="false"
-            data-force-hover-state="false"
-            data-background-color="#000000"
+            data-status="${status}"
             aria-hidden="true"
           ></div>
         </div>
@@ -5398,6 +5569,18 @@ function attachHandlers() {
   // Action icons live inside .run-item (sidebar list) or .run-header
   // (detail page) — stopPropagation so clicking one doesn't also trigger
   // the parent .run-item's click-to-select handler above.
+  document.querySelectorAll("[data-pin-run]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pinRun(btn.dataset.pinRun);
+    });
+  });
+  document.querySelectorAll("[data-unpin-run]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      unpinRun(btn.dataset.unpinRun);
+    });
+  });
   document.querySelectorAll("[data-archive-run]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -5905,7 +6088,9 @@ function attachHandlers() {
       try {
         await submitGoal(goal);
         // submitGoal's own render() (via selectRun) replaces this whole form,
-        // so no manual reset needed on success.
+        // so no manual reset needed on success. Clear the saved draft too, or
+        // it'd reappear next time this view's composer is rendered.
+        delete state.goalDrafts[goalDraftKey(state.view)];
       } catch (err) {
         // Deliberately no render() here — #goal-input isn't state-controlled,
         // so a full re-render would wipe whatever the user just typed. Update
@@ -5917,11 +6102,18 @@ function attachHandlers() {
         btn.disabled = false;
       }
     });
-    document.getElementById("goal-input")?.addEventListener("keydown", (e) => {
+    const goalInputEl = document.getElementById("goal-input");
+    goalInputEl?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         form.requestSubmit();
       }
+    });
+    // Mirror every keystroke into state so a later full render() — e.g. from
+    // switchView() when the user hops to another tab and back — restores
+    // whatever was typed instead of starting the textarea blank.
+    goalInputEl?.addEventListener("input", () => {
+      state.goalDrafts[goalDraftKey(state.view)] = goalInputEl.value;
     });
   }
 
@@ -6019,6 +6211,106 @@ function initNavTooltip() {
   });
 }
 
+// ---------- Model picker ----------
+//
+// The popover is a true DOM portal — one persistent element created once
+// and appended directly to <body>, entirely outside #app — rather than part
+// of the render()-generated markup. #app's .composer ancestor has
+// `overflow: hidden` for its rounded-corner card look, which hard-clips any
+// normal (even `position: fixed`) descendant the moment a further-out
+// ancestor turns out to establish its own containing block; appending to
+// <body> sidesteps that whole class of issue instead of fighting it via
+// z-index/positioning tricks. Only the trigger button lives in the normal
+// render tree (so it redraws with the rest of .goal-actions); the portal's
+// own content is (re)written imperatively and is untouched by render().
+let modelPickerPortal = null;
+
+function ensureModelPickerPortal() {
+  if (modelPickerPortal) return modelPickerPortal;
+  const el = document.createElement("div");
+  el.className = "model-picker-menu";
+  el.id = "model-picker-menu";
+  el.setAttribute("role", "menu");
+  el.style.display = "none";
+  document.body.appendChild(el);
+  modelPickerPortal = el;
+  return el;
+}
+
+function renderModelPickerPortalContent() {
+  const el = ensureModelPickerPortal();
+  el.innerHTML = MODEL_OPTIONS.map(
+    (opt) => `
+      <button type="button" class="model-picker-item${state.selectedModel === opt.value ? " selected" : ""}" data-model-value="${opt.value}" role="menuitemradio" aria-checked="${state.selectedModel === opt.value}">
+        <i data-lucide="check" class="model-picker-check"></i>
+        <span class="model-picker-item-text">
+          <span>${escapeHtml(opt.label)}</span>
+          ${opt.description ? `<span class="model-picker-item-desc">${escapeHtml(opt.description)}</span>` : ""}
+        </span>
+      </button>
+    `,
+  ).join("");
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// Anchors to the trigger button's actual screen position (getBoundingClientRect
+// is always viewport-relative, matching this element's `position: fixed`),
+// same approach as initNavTooltip()'s tooltip. Opens upward from the
+// button's right edge, clamped so it never runs off the viewport.
+function positionModelPickerMenu() {
+  const btn = document.getElementById("model-picker-btn");
+  const menu = modelPickerPortal;
+  if (!btn || !menu) return;
+  const btnRect = btn.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(btnRect.right - menuRect.width, window.innerWidth - menuRect.width - 8));
+  const top = Math.max(8, btnRect.top - menuRect.height - 8);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+function openModelPicker() {
+  state.modelPickerOpen = true;
+  renderModelPickerPortalContent();
+  const el = ensureModelPickerPortal();
+  el.style.display = "flex";
+  positionModelPickerMenu();
+  render(); // updates the trigger button's "open" styling/aria-expanded
+}
+
+function closeModelPicker() {
+  state.modelPickerOpen = false;
+  if (modelPickerPortal) modelPickerPortal.style.display = "none";
+  render();
+}
+
+function initModelPicker() {
+  document.addEventListener("click", (e) => {
+    const item = e.target.closest?.(".model-picker-item");
+    if (item) {
+      state.selectedModel = item.dataset.modelValue;
+      closeModelPicker();
+      return;
+    }
+    const toggleBtn = e.target.closest?.("#model-picker-btn");
+    if (toggleBtn) {
+      if (state.modelPickerOpen) closeModelPicker();
+      else openModelPicker();
+      return;
+    }
+    if (state.modelPickerOpen && !e.target.closest?.("#model-picker-menu") && !e.target.closest?.("#model-picker-btn")) {
+      closeModelPicker();
+    }
+  });
+
+  // Keep the menu anchored to the button across viewport/layout changes
+  // while it's open (e.g. resizing the window, or the composer moving
+  // between .sidebar and .main at the mobile breakpoint).
+  window.addEventListener("resize", () => {
+    if (state.modelPickerOpen) positionModelPickerMenu();
+  });
+}
+
 // ---------- Log interactions ----------
 //
 // Delegated on `document`, same reasoning as initNavTooltip: .log and its
@@ -6045,6 +6337,40 @@ function initLogInteractions() {
     },
     true,
   );
+}
+
+// ---------- Header popovers (Playbook menu / Account menu) ----------
+//
+// Both popovers were CSS-only (:hover/:focus-within), which never opens on
+// touch — there's no hover on a phone, and tapping a <button> doesn't put
+// it in the tap-focus chain on iOS Safari. Same delegated-on-document,
+// bound-once pattern as initModelPicker: a `.open` class (added alongside
+// the existing :hover/:focus-within CSS rules, not replacing them) drives
+// visibility, toggled on tap and dismissed on an outside click so desktop
+// hover behavior is completely unaffected.
+function initHeaderPopovers() {
+  document.addEventListener("click", (e) => {
+    const playbookBtn = e.target.closest?.("#playbook-menu-btn");
+    if (playbookBtn) {
+      e.stopPropagation();
+      document.querySelector(".header-account")?.classList.remove("open");
+      playbookBtn.closest(".playbook-menu")?.classList.toggle("open");
+      return;
+    }
+    const accountBtn = e.target.closest?.("#account-menu-btn");
+    if (accountBtn) {
+      e.stopPropagation();
+      document.querySelector(".playbook-menu")?.classList.remove("open");
+      accountBtn.closest(".header-account")?.classList.toggle("open");
+      return;
+    }
+    if (!e.target.closest?.(".playbook-menu-popover")) {
+      document.querySelector(".playbook-menu")?.classList.remove("open");
+    }
+    if (!e.target.closest?.(".account-popover")) {
+      document.querySelector(".header-account")?.classList.remove("open");
+    }
+  });
 }
 
 // ---------- Kanban wheel scroll ----------
@@ -6076,7 +6402,9 @@ function initKanbanWheelScroll() {
 async function init() {
   initTheme();
   initNavTooltip();
+  initModelPicker();
   initLogInteractions();
+  initHeaderPopovers();
   initKanbanWheelScroll();
   initResponsiveLayout();
   render();

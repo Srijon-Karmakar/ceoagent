@@ -11,6 +11,7 @@ import {
   type LeadRecord,
   type LeadStage,
 } from "../crm.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const stageEnum = z.enum(LEAD_STAGES as [LeadStage, ...LeadStage[]]);
 
@@ -37,7 +38,7 @@ function formatLead(lead: LeadRecord): string {
   return lines.join("\n");
 }
 
-const createLeadTool = tool(
+const createLeadToolDef = defineTool(
   "create_lead",
   "Add a new lead to the CRM pipeline. Use this both for leads found via active prospecting (web research) and for leads captured from a connected channel (Gmail, Instagram, WhatsApp, LinkedIn) — set source accordingly (e.g. \"research\", \"gmail\", \"instagram\", \"whatsapp\", \"linkedin\", \"manual\"). Check list_leads first if there's a real risk of adding a duplicate (e.g. same name/company already prospected in this session).",
   {
@@ -63,7 +64,7 @@ const createLeadTool = tool(
   },
 );
 
-const listLeadsTool = tool(
+const listLeadsToolDef = defineTool(
   "list_leads",
   "List leads in the CRM pipeline, optionally filtered by stage or source. Archived leads are excluded unless includeArchived is true.",
   {
@@ -81,7 +82,7 @@ const listLeadsTool = tool(
   },
 );
 
-const getLeadTool = tool(
+const getLeadToolDef = defineTool(
   "get_lead",
   "Get full detail (including activity log) for a single lead by id.",
   { id: z.string().describe("Lead id, from list_leads") },
@@ -92,7 +93,7 @@ const getLeadTool = tool(
   },
 );
 
-const updateLeadTool = tool(
+const updateLeadToolDef = defineTool(
   "update_lead",
   "Edit an existing lead by id — any of its fields, including moving it to a new pipeline stage. Only pass the fields you want to change.",
   {
@@ -119,7 +120,7 @@ const updateLeadTool = tool(
   },
 );
 
-const logLeadActivityTool = tool(
+const logLeadActivityToolDef = defineTool(
   "log_lead_activity",
   "Append a timestamped note to a lead's activity log — e.g. why a prospected lead is a good fit, that an email/DM was sent, or a summary of a reply received.",
   {
@@ -133,7 +134,7 @@ const logLeadActivityTool = tool(
   },
 );
 
-const deleteLeadTool = tool(
+const deleteLeadToolDef = defineTool(
   "delete_lead",
   "Permanently delete a lead by id. Cannot be undone — prefer update_lead with stage: \"lost\" or archived: true unless the user explicitly wants it erased.",
   { id: z.string().describe("Lead id, from list_leads") },
@@ -164,10 +165,19 @@ export const CRM_OUTREACH_TOOLS = [
   "mcp__crm__log_lead_activity",
 ];
 
+export const CRM_TOOL_DEFS = [
+  createLeadToolDef,
+  listLeadsToolDef,
+  getLeadToolDef,
+  updateLeadToolDef,
+  logLeadActivityToolDef,
+  deleteLeadToolDef,
+];
+
 export const crmServer = createSdkMcpServer({
   name: "crm",
   version: "1.0.0",
   instructions:
     "Tools for managing a local lead/pipeline CRM: creating leads (from prospecting or channel capture), listing/filtering them, updating fields or pipeline stage, logging activity notes, and deleting. list_leads first to avoid duplicating an already-tracked lead.",
-  tools: [createLeadTool, listLeadsTool, getLeadTool, updateLeadTool, logLeadActivityTool, deleteLeadTool],
+  tools: CRM_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

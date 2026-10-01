@@ -5,6 +5,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { uploadMediaToZernio, publishZernioPost } from "./zernio.js";
 import { getDataDir } from "../paths.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // A plain folder on disk, not under WORKSPACE_DIR — these files come from the
 // user dropping them in directly (e.g. via Explorer/Finder or a synced
@@ -28,7 +29,7 @@ async function ensureDir() {
   getPostImagesDir();
 }
 
-const listPostImages = tool(
+const listPostImagesDef = defineTool(
   "list_post_images",
   "List image files available to post from the current organization's local drop folder. Use this before post_folder_image to see what's there and confirm the filename with the user.",
   {},
@@ -54,7 +55,7 @@ const listPostImages = tool(
   },
 );
 
-const postFolderImage = tool(
+const postFolderImageDef = defineTool(
   "post_folder_image",
   "Upload an image from the local drop folder and publish it as a post to one or more connected platforms via Zernio. Irreversible and immediately public once sent — describe the filename, caption, and target platforms back to the user and only call this when explicitly told to post (not just draft). Look up the filename with list_post_images and accountId values with list_zernio_accounts first.",
   {
@@ -99,9 +100,11 @@ const postFolderImage = tool(
 
 export const POST_IMAGES_TOOLS = ["mcp__post_images__list_post_images", "mcp__post_images__post_folder_image"];
 
+export const POST_IMAGES_TOOL_DEFS = [listPostImagesDef, postFolderImageDef];
+
 export const postImagesServer = createSdkMcpServer({
   name: "post_images",
   version: "1.0.0",
   instructions: "Tools for posting images the user has placed in the current organization's local drop folder to connected social platforms via Zernio.",
-  tools: [listPostImages, postFolderImage],
+  tools: POST_IMAGES_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

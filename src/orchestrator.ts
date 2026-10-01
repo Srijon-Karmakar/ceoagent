@@ -1,6 +1,7 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type HookCallback, type HookCallbackMatcher, type HookEvent } from "@anthropic-ai/claude-agent-sdk";
 import { linearServer, LINEAR_TOOLS } from "./tools/linear.js";
 import { gmailServer, GMAIL_TOOLS, isGmailConnected } from "./tools/gmail.js";
+import { sesServer, SES_TOOLS, isSesConnected } from "./tools/ses.js";
 import { instagramServer, INSTAGRAM_TOOLS, isInstagramConnected } from "./tools/instagram.js";
 import { linkedinServer, LINKEDIN_TOOLS, isLinkedinConnected } from "./tools/linkedin.js";
 import { facebookServer, FACEBOOK_TOOLS, isFacebookConnected } from "./tools/facebook.js";
@@ -21,12 +22,41 @@ import { portfolioServer } from "./tools/portfolio.js";
 import { memoryServer } from "./tools/memory.js";
 import { DEPARTMENTS, buildAgentsRegistry, documentsServer, allSpecialistToolNames } from "./agents.js";
 import { getWorkspaceDir } from "./workspace.js";
+import { DEVELOPER_INFO_BLOCK } from "./developer/index.js";
 
 export { getWorkspaceDir };
 
 function rosterDescription(): string {
   return DEPARTMENTS.map((d) => `- ${d.key} (${d.label}): ${d.tagline}`).join("\n");
 }
+
+// The Agent tool's `run_in_background` defaults to true in the SDK. Every
+// traced instance of a delegated specialist's tool results silently coming
+// back empty (see CEO_SYSTEM_PROMPT rules 9/10) turned out to share one
+// cause: the delegating call omitted run_in_background: false, so the SDK
+// backgrounded it — and this app has no reliable way to recover a
+// backgrounded subagent's own nested MCP tool results, only its final
+// summary (if that even arrives before the parent turn moves on). The CEO's
+// prompt already asks it to always pass false, but that's prose competing
+// with a long system prompt, and it's already been observed to get dropped
+// under load. Enforcing it structurally here — rewriting the tool call
+// before it runs — is the only version of this that actually holds every
+// time, regardless of what the model remembers to type.
+const forceSynchronousDelegation: HookCallback = async (input) => {
+  if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Agent") return {};
+  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+  if (toolInput.run_in_background === false) return {};
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      updatedInput: { ...toolInput, run_in_background: false },
+    },
+  };
+};
+
+const AGENT_DELEGATION_HOOKS: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {
+  PreToolUse: [{ hooks: [forceSynchronousDelegation] }],
+};
 
 const CEO_SYSTEM_PROMPT = `You are the CEO agent of a small automated organization.
 
@@ -36,13 +66,16 @@ You receive a goal or signal (from an email, a request, or a direct instruction)
 3. Decide whether it needs delegation, and to whom. You can delegate to any of these specialists via the Agent tool (subagent_type):
 ${rosterDescription()}
 4. Give whoever you delegate to a clear, concrete brief — not a vague summary. You can delegate to more than one specialist for a single goal if it genuinely spans departments.
-5. Do not do specialists' work yourself (don't create Linear tasks, don't write code, don't draft documents) — that's what delegation is for. Your job is analysis, delegation, and reporting.
+5. Do not do specialists' work yourself (don't create Linear tasks, don't write code, don't draft documents) — that's what delegation is for. Your job is analysis, delegation, and reporting. (Exception: rule 10.)
 6. Always call the Agent tool with run_in_background: false. Backgrounding a delegation doesn't save any time here — this app already waits for the full run before reporting back — and specialists' tool calls (Linear, documents, etc.) are unreliable when run in the background, silently returning empty results even though nothing actually failed. Only synchronous delegation gets a trustworthy result.
 7. If n8n workflow tools are available, you (not a specialist) are the one who triggers cross-cutting automations (e.g. notifying a channel, updating an external system) once delegated work is done — check list_n8n_workflows for what's available before assuming one exists. Don't invent a workflow name; only ever trigger ones that tool actually lists.
 8. After delegating (and triggering any relevant automation), summarize back to the user: what was decided, who you delegated to, and what they reported. If a specialist hit a blocker (e.g. a tool isn't configured), say so honestly rather than claiming success.
 9. When a specialist reports having sent, posted, or messaged something, only relay that as confirmed if their report cites a concrete identifier (a message ID, post ID) — a report of success with no identifier is not confirmed, and you must say so plainly (e.g. "reported as sent, but I can't confirm — no message ID came back") rather than repeating the claim as fact. This app has a known issue where a delegated specialist's tool result can go missing in transit, causing it to report success it never actually verified.
+10. If a delegated specialist's tool calls come back completely empty ("completed with no output") for more than one call in a row — especially if any of those calls needed no external service at all (e.g. a local list/read tool, not just an integration like Gmail) — that pattern is rule 9's known result-loss bug, not a real integration failure. In that case: do NOT conclude the integration/credentials are broken, do NOT tell the user to disconnect/reconnect an account that was working before, and do NOT keep retrying via delegation. Instead call the same tool(s) yourself directly — you have the same MCP tools the specialist does, and your own direct calls aren't subject to this bug. Only report a real blocker (and only then suggest reconnecting) if your own direct call fails with an actual error message, not just empty output.
 
-Be decisive. Do not ask clarifying questions unless the goal is genuinely ambiguous about scope or priority.`;
+Be decisive. Do not ask clarifying questions unless the goal is genuinely ambiguous about scope or priority.
+
+${DEVELOPER_INFO_BLOCK}`;
 
 function buildMcpServers() {
   return {
@@ -54,6 +87,7 @@ function buildMcpServers() {
     portfolio: portfolioServer,
     memory: memoryServer,
     ...(isGmailConnected() ? { gmail: gmailServer } : {}),
+    ...(isSesConnected() ? { ses: sesServer } : {}),
     ...(isInstagramConnected() ? { instagram: instagramServer } : {}),
     ...(isLinkedinConnected() ? { linkedin: linkedinServer } : {}),
     ...(isFacebookConnected() ? { facebook: facebookServer } : {}),
@@ -73,6 +107,7 @@ function buildMcpServers() {
 function allToolNames(): string[] {
   const names = new Set<string>(["Agent", ...LINEAR_TOOLS, ...allSpecialistToolNames()]);
   if (isGmailConnected()) for (const t of GMAIL_TOOLS) names.add(t);
+  if (isSesConnected()) for (const t of SES_TOOLS) names.add(t);
   if (isInstagramConnected()) for (const t of INSTAGRAM_TOOLS) names.add(t);
   if (isLinkedinConnected()) for (const t of LINKEDIN_TOOLS) names.add(t);
   if (isFacebookConnected()) for (const t of FACEBOOK_TOOLS) names.add(t);
@@ -115,7 +150,7 @@ export interface LinearTaskRef {
   url: string;
 }
 
-function extractLinearTask(text: string): LinearTaskRef | null {
+export function extractLinearTask(text: string): LinearTaskRef | null {
   const match = text.match(/^Created (\S+): (.+?)\n(https?:\/\/\S+)/);
   if (!match) return null;
   return { identifier: match[1], title: match[2], url: match[3] };
@@ -246,6 +281,7 @@ export async function runCeoAgent(goal: string, onEvent: (event: RunEvent) => vo
       allowedTools: allToolNames(),
       permissionMode: "dontAsk",
       maxTurns: 40,
+      hooks: AGENT_DELEGATION_HOOKS,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     },
   });
@@ -275,6 +311,7 @@ export async function runSpecialistAgent(
       allowedTools: agent.tools ?? [],
       permissionMode: "dontAsk",
       maxTurns: 40,
+      hooks: AGENT_DELEGATION_HOOKS,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     },
   });

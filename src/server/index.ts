@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
+import ExcelJS from "exceljs";
 import { config as loadDotenv } from "dotenv";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,8 +24,10 @@ import { getBaseDir, getTenantContext, runWithTenant } from "../paths.js";
 import { DEPARTMENTS, buildAgentsRegistry } from "../agents.js";
 import { listDocuments, getDocument } from "../tools/documents.js";
 import { parseAttachment } from "../tools/attachments.js";
+import { resolveVirtualPath, saveUpload } from "./files.js";
+import { promises as fsPromises } from "node:fs";
 import { getAnalytics } from "./analytics.js";
-import { runCeoAgent, runSpecialistAgent } from "../orchestrator.js";
+import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, isValidProviderChoice, type LlmProviderChoice } from "../providers/llmFallback.js";
 import { startCeoRun as runRunnerStartCeoRun, startSpecialistRun as runRunnerStartSpecialistRun, startRun } from "./runRunner.js";
 import {
   createSchedule,
@@ -127,6 +130,8 @@ import {
   listRunsFor,
   archiveRun,
   unarchiveRun,
+  pinRun,
+  unpinRun,
   deleteRun,
   subscribe,
 } from "./store.js";
@@ -218,7 +223,21 @@ app.post("/api/uploads", upload.single("file"), restoreTenant, async (req, res) 
   }
   try {
     const { text, truncated } = await parseAttachment(req.file.buffer, req.file.originalname);
-    res.json({ filename: req.file.originalname, text, truncated });
+    // HTML templates are the one attachment type an agent later needs to
+    // reproduce byte-for-byte (to save/send as a designed email) rather than
+    // just read — retyping one through the model's own generation is where
+    // long templates silently lose their later sections. Persisting the raw
+    // file under workspace/ lets import_email_template_from_file (gmail.ts)
+    // read it straight off disk instead, bypassing that failure mode.
+    let path: string | undefined;
+    const ext = req.file.originalname.toLowerCase().split(".").pop();
+    if (ext === "html" || ext === "htm") {
+      const uploadsDir = resolveVirtualPath("workspace/uploads");
+      await fsPromises.mkdir(uploadsDir.absPath, { recursive: true });
+      const entry = await saveUpload("workspace/uploads", req.file.originalname, req.file.buffer);
+      path = entry.path;
+    }
+    res.json({ filename: req.file.originalname, text, truncated, path });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -228,13 +247,14 @@ interface AttachmentInput {
   filename: string;
   text: string;
   truncated?: boolean;
+  path?: string;
 }
 
 function parseOneAttachment(a: unknown): AttachmentInput | undefined {
   if (!a || typeof a !== "object") return undefined;
-  const { filename, text, truncated } = a as Record<string, unknown>;
+  const { filename, text, truncated, path } = a as Record<string, unknown>;
   if (typeof filename !== "string" || typeof text !== "string") return undefined;
-  return { filename, text, truncated: truncated === true };
+  return { filename, text, truncated: truncated === true, path: typeof path === "string" ? path : undefined };
 }
 
 // Accepts both the current plural `attachments` array (bulk upload) and the
@@ -255,19 +275,32 @@ function buildPrompt(goal: string, attachments: AttachmentInput[]): string {
   if (!attachments.length) return goal;
   const blocks = attachments.map((a) => {
     const note = a.truncated ? " (truncated)" : "";
-    return `--- Attached file: ${a.filename}${note} ---\n${a.text}\n--- end of attachment ---`;
+    const pathNote = a.path
+      ? ` (path: ${a.path} — an HTML template: if saving/sending this design, use import_email_template_from_file with this exact path instead of retyping the markup below into create_email_template, which corrupts long HTML)`
+      : "";
+    return `--- Attached file: ${a.filename}${note}${pathNote} ---\n${a.text}\n--- end of attachment ---`;
   });
   return `${goal}\n\n${blocks.join("\n\n")}`;
 }
 
 // --- Runs: CEO overview (delegates to whichever specialists fit) ---
 
-function startCeoRun(goal: string, attachments: AttachmentInput[]) {
-  return runRunnerStartCeoRun(goal, buildPrompt(goal, attachments));
+// "provider" lets the caller pin a run to one specific model (from the
+// dashboard's model dropdown) instead of the default Claude -> OpenAI ->
+// DeepSeek -> Ollama auto-cascade — invalid/omitted values fall back to
+// "auto" rather than rejecting the request, since this is an enhancement,
+// not a required field for any existing caller (automation/n8n included).
+function parseProviderChoice(body: unknown): LlmProviderChoice {
+  const value = (body as { provider?: unknown })?.provider;
+  return typeof value === "string" && isValidProviderChoice(value) ? value : "auto";
 }
 
-function startSpecialistRun(key: string, goal: string, attachments: AttachmentInput[]) {
-  return runRunnerStartSpecialistRun(key, goal, buildPrompt(goal, attachments));
+function startCeoRun(goal: string, attachments: AttachmentInput[], provider: LlmProviderChoice) {
+  return runRunnerStartCeoRun(goal, buildPrompt(goal, attachments), provider);
+}
+
+function startSpecialistRun(key: string, goal: string, attachments: AttachmentInput[], provider: LlmProviderChoice) {
+  return runRunnerStartSpecialistRun(key, goal, buildPrompt(goal, attachments), provider);
 }
 
 app.post("/api/runs", (req, res) => {
@@ -276,7 +309,7 @@ app.post("/api/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startCeoRun(goal, readAttachments(req.body));
+  const record = startCeoRun(goal, readAttachments(req.body), parseProviderChoice(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -293,7 +326,7 @@ app.post("/api/agents/:key/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startSpecialistRun(key, goal, readAttachments(req.body));
+  const record = startSpecialistRun(key, goal, readAttachments(req.body), parseProviderChoice(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -309,7 +342,7 @@ app.post("/api/automation/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startCeoRun(goal, readAttachments(req.body));
+  const record = startCeoRun(goal, readAttachments(req.body), parseProviderChoice(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -324,7 +357,7 @@ app.post("/api/automation/agents/:key/runs", (req, res) => {
     res.status(400).json({ error: "goal is required" });
     return;
   }
-  const record = startSpecialistRun(key, goal, readAttachments(req.body));
+  const record = startSpecialistRun(key, goal, readAttachments(req.body), parseProviderChoice(req.body));
   res.status(201).json({ id: record.id });
 });
 
@@ -352,14 +385,16 @@ app.post("/api/runs/:id/reply", (req, res) => {
   }
 
   reopenRun(record.id);
+  appendEvent(record.id, { type: "text", source: "user", text: message, ts: new Date().toISOString() });
   res.status(202).json({ id: record.id });
 
   const resumeSessionId = record.sessionId;
   const agentKey = record.agentKey;
+  const provider = record.provider ?? "auto";
   startRun(record, () =>
     agentKey === "ceo"
-      ? runCeoAgent(message, (event) => appendEvent(record.id, event), resumeSessionId)
-      : runSpecialistAgent(agentKey, message, (event) => appendEvent(record.id, event), resumeSessionId),
+      ? runCeoAgentWithFallback(message, (event) => appendEvent(record.id, event), resumeSessionId, provider)
+      : runSpecialistAgentWithFallback(agentKey, message, (event) => appendEvent(record.id, event), resumeSessionId, provider),
   );
 });
 
@@ -860,6 +895,7 @@ app.get("/api/runs", (req, res) => {
       summary: r.summary,
       linearTasks: r.linearTasks,
       archived: Boolean(r.archived),
+      pinned: Boolean(r.pinned),
     }));
   res.json(runs);
 });
@@ -894,6 +930,24 @@ app.post("/api/runs/:id/archive", (req, res) => {
 
 app.post("/api/runs/:id/unarchive", (req, res) => {
   const ok = unarchiveRun(req.params.id);
+  if (!ok) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+app.post("/api/runs/:id/pin", (req, res) => {
+  const ok = pinRun(req.params.id);
+  if (!ok) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+app.post("/api/runs/:id/unpin", (req, res) => {
+  const ok = unpinRun(req.params.id);
   if (!ok) {
     res.status(404).json({ error: "not found" });
     return;
@@ -986,6 +1040,121 @@ app.get("/api/documents/:id", (req, res) => {
     return;
   }
   res.json(doc);
+});
+
+function escapeHtmlForDownload(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function downloadFileName(title: string, ext: string): string {
+  const base = title
+    .trim()
+    .replace(/[/\\?%*:|"<>]/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 80) || "document";
+  return `${base}.${ext}`;
+}
+
+function documentHtml(title: string, content: string): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtmlForDownload(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.5; color: #111827; }
+    pre { white-space: pre-wrap; font-family: Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtmlForDownload(title)}</h1>
+  <pre>${escapeHtmlForDownload(content)}</pre>
+</body>
+</html>`;
+}
+
+function parseMarkdownTables(markdown: string): string[][][] {
+  const lines = markdown.split(/\r?\n/);
+  const tables: string[][][] = [];
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const header = lines[i].trim();
+    const separator = lines[i + 1].trim();
+    if (!header.includes("|") || !/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(separator)) continue;
+    const rows: string[][] = [];
+    const splitRow = (line: string) =>
+      line
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim());
+    rows.push(splitRow(header));
+    i += 2;
+    while (i < lines.length && lines[i].trim().includes("|")) {
+      rows.push(splitRow(lines[i]));
+      i += 1;
+    }
+    i -= 1;
+    tables.push(rows);
+  }
+  return tables;
+}
+
+async function documentXlsxBuffer(title: string, content: string): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "CEO Agent OS";
+  workbook.created = new Date();
+  const tables = parseMarkdownTables(content);
+
+  if (tables.length) {
+    tables.forEach((table, index) => {
+      const worksheet = workbook.addWorksheet(tables.length === 1 ? "Document Data" : `Table ${index + 1}`);
+      table.forEach((row) => worksheet.addRow(row));
+      worksheet.getRow(1).font = { bold: true };
+      table[0]?.forEach((_, columnIndex) => {
+        const max = table.reduce((width, row) => Math.max(width, String(row[columnIndex] ?? "").length), 10);
+        worksheet.getColumn(columnIndex + 1).width = Math.min(max + 2, 60);
+      });
+    });
+  } else {
+    const worksheet = workbook.addWorksheet("Document");
+    worksheet.columns = [{ header: "Content", key: "content", width: 100 }];
+    content.split(/\r?\n/).forEach((line) => worksheet.addRow({ content: line }));
+    worksheet.getRow(1).font = { bold: true };
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer as ArrayBuffer);
+}
+
+app.get("/api/documents/:id/download", async (req, res) => {
+  const doc = getDocument(req.params.id);
+  if (!doc) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+
+  const format = typeof req.query.format === "string" ? req.query.format.toLowerCase() : "doc";
+  if (format === "xlsx") {
+    const buffer = await documentXlsxBuffer(doc.title, doc.content);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${downloadFileName(doc.title, "xlsx")}"`);
+    res.send(buffer);
+    return;
+  }
+
+  if (format === "doc") {
+    res.setHeader("Content-Type", "application/msword; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${downloadFileName(doc.title, "doc")}"`);
+    res.send(documentHtml(doc.title, doc.content));
+    return;
+  }
+
+  res.status(400).json({ error: "unsupported format" });
 });
 
 // --- Files: the human-facing folder browser (data/, deliverables/,

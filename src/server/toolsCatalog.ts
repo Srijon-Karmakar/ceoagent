@@ -32,8 +32,13 @@ const CATALOG: CatalogSeed[] = [
     key: "gmail",
     label: "Gmail",
     usedBy: ["Emails", "Sales", "CRM", "PR"],
-    features: ["Read & search the inbox", "Draft replies", "Send email (only when told to)"],
-    examplePrompt: "Check my inbox for unread emails and draft a reply to the most important one.",
+    features: [
+      "Read & search the inbox",
+      "Draft replies",
+      "Send email (only when told to)",
+      "Save reusable templates and bulk-send to a list, personalized per recipient",
+    ],
+    examplePrompt: "Email our top 50 leads the intro template, filling in each one's name and company.",
   },
   {
     key: "instagram",

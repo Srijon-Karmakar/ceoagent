@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 function tokenFile(): string {
   return join(getDataDir(), "linkedin-token.json");
@@ -143,7 +144,7 @@ function linkedinHeaders(accessToken: string) {
   };
 }
 
-const createOrganizationPost = tool(
+const createOrganizationPostDef = defineTool(
   "create_organization_post",
   "Publish a text post to the connected LinkedIn Company Page's feed. Irreversible and immediately public — only use when explicitly told to post (not just draft).",
   { text: z.string().describe("Post body text") },
@@ -172,7 +173,7 @@ const createOrganizationPost = tool(
   },
 );
 
-const listOrganizationPosts = tool(
+const listOrganizationPostsDef = defineTool(
   "list_organization_posts",
   "List recent posts on the connected LinkedIn Company Page, for context or reporting.",
   { limit: z.number().int().min(1).max(25).default(10) },
@@ -200,10 +201,12 @@ const listOrganizationPosts = tool(
 
 export const LINKEDIN_TOOLS = ["mcp__linkedin__create_organization_post", "mcp__linkedin__list_organization_posts"];
 
+export const LINKEDIN_TOOL_DEFS = [createOrganizationPostDef, listOrganizationPostsDef];
+
 export const linkedinServer = createSdkMcpServer({
   name: "linkedin",
   version: "1.0.0",
   instructions:
     "Tools for posting to and reading the connected LinkedIn Company Page's feed. Default to describing the draft back to the user before posting; only post directly when explicitly told to.",
-  tools: [createOrganizationPost, listOrganizationPosts],
+  tools: LINKEDIN_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

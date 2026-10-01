@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // Deliberately NOT "call any URL the model gives you" — that would make this
 // tool an open SSRF vector for whatever an agent gets talked into (a
@@ -57,7 +58,7 @@ async function postToN8n(url: string, payload: Record<string, unknown>): Promise
   }
 }
 
-const listN8nWorkflows = tool(
+const listN8nWorkflowsDef = defineTool(
   "list_n8n_workflows",
   "List the n8n workflows available to trigger, by name. Use this first to see valid names for trigger_n8n_workflow — the tool only accepts names from this list, not arbitrary URLs.",
   {},
@@ -72,7 +73,7 @@ const listN8nWorkflows = tool(
   },
 );
 
-const triggerN8nWorkflow = tool(
+const triggerN8nWorkflowDef = defineTool(
   "trigger_n8n_workflow",
   "Trigger a pre-configured n8n workflow by name, with a JSON payload the workflow can use. Only names from list_n8n_workflows are valid — this cannot call arbitrary URLs. Use for cross-cutting automations (notifications, CRM/sheet updates, etc.) that live in n8n rather than as a tool here.",
   {
@@ -115,10 +116,12 @@ const triggerN8nWorkflow = tool(
 
 export const N8N_TOOLS = ["mcp__n8n__list_n8n_workflows", "mcp__n8n__trigger_n8n_workflow"];
 
+export const N8N_TOOL_DEFS = [listN8nWorkflowsDef, triggerN8nWorkflowDef];
+
 export const n8nServer = createSdkMcpServer({
   name: "n8n",
   version: "1.0.0",
   instructions:
     "Tools for triggering pre-configured n8n automations by name. list_n8n_workflows first to see what's available — trigger_n8n_workflow only accepts those names, never a raw URL.",
-  tools: [listN8nWorkflows, triggerN8nWorkflow],
+  tools: N8N_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

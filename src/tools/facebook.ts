@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const GRAPH_VERSION = "v19.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -135,7 +136,7 @@ function getConnection(): FacebookConnection {
   return connection;
 }
 
-const listFacebookGroups = tool(
+const listFacebookGroupsDef = defineTool(
   "list_facebook_groups",
   "List the Facebook Groups this agent is allowed to post to. create_facebook_group_post only accepts a group id from this list — never an arbitrary one.",
   {},
@@ -150,7 +151,7 @@ const listFacebookGroups = tool(
   },
 );
 
-const createFacebookGroupPost = tool(
+const createFacebookGroupPostDef = defineTool(
   "create_facebook_group_post",
   "Publish a text post to a Facebook Group's feed — this goes live immediately with no confirmation step, so only call it once the post is genuinely finished and the user has been told what it says. Only accepts a group id from list_facebook_groups. Requires the group to have granted this app the publish_to_groups permission (Meta App Review) — if that hasn't happened, this will fail with a permissions error.",
   {
@@ -202,10 +203,12 @@ const createFacebookGroupPost = tool(
 
 export const FACEBOOK_TOOLS = ["mcp__facebook__list_facebook_groups", "mcp__facebook__create_facebook_group_post"];
 
+export const FACEBOOK_TOOL_DEFS = [listFacebookGroupsDef, createFacebookGroupPostDef];
+
 export const facebookServer = createSdkMcpServer({
   name: "facebook",
   version: "1.0.0",
   instructions:
     "Tools for publishing text posts to pre-approved Facebook Groups. list_facebook_groups first — create_facebook_group_post only accepts a group id from that list, and publishes immediately with no confirmation step. Requires Meta App Review approval for publish_to_groups to actually succeed.",
-  tools: [listFacebookGroups, createFacebookGroupPost],
+  tools: FACEBOOK_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

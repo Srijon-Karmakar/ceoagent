@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 function tokenFile(): string {
   return join(getDataDir(), "instagram-token.json");
@@ -164,7 +165,7 @@ function getConnection(): InstagramConnection {
 // public docs didn't have a page confirming this exact path at the time
 // this was written. Treat as best-effort; if either 404s, that's the first
 // thing to check against Meta's current Instagram Messaging API reference.
-const listInstagramConversations = tool(
+const listInstagramConversationsDef = defineTool(
   "list_instagram_conversations",
   "List recent Instagram DM conversations for the connected professional account.",
   { limit: z.number().int().min(1).max(25).default(10) },
@@ -185,7 +186,7 @@ const listInstagramConversations = tool(
   },
 );
 
-const readInstagramConversation = tool(
+const readInstagramConversationDef = defineTool(
   "read_instagram_conversation",
   "Read recent messages in a specific Instagram DM conversation (by ID from list_instagram_conversations).",
   { conversationId: z.string() },
@@ -212,9 +213,11 @@ export const INSTAGRAM_TOOLS = [
   "mcp__instagram__read_instagram_conversation",
 ];
 
+export const INSTAGRAM_TOOL_DEFS = [listInstagramConversationsDef, readInstagramConversationDef];
+
 export const instagramServer = createSdkMcpServer({
   name: "instagram",
   version: "1.0.0",
   instructions: "Tools for reading Instagram DM conversations on the connected professional account.",
-  tools: [listInstagramConversations, readInstagramConversation],
+  tools: INSTAGRAM_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

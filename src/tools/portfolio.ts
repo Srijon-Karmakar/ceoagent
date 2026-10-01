@@ -19,6 +19,7 @@ import {
   type PortfolioNote,
   type PortfolioNoteTab,
 } from "../portfolio.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 const categoryEnum = z.enum(PORTFOLIO_CATEGORIES as [PortfolioCategory, ...PortfolioCategory[]]);
 const statusEnum = z.enum(PORTFOLIO_ENTRY_STATUSES as [PortfolioEntryStatus, ...PortfolioEntryStatus[]]);
@@ -42,7 +43,7 @@ function formatEntry(entry: PortfolioEntry): string {
   return lines.join("\n");
 }
 
-const listProjectsTool = tool(
+const listProjectsToolDef = defineTool(
   "list_portfolio_projects",
   "List the portfolio's project/product tabs (id + name). Call this first to find the right projectId before creating or filtering entries — projects are human-curated, so don't assume one exists without checking.",
   {},
@@ -55,7 +56,7 @@ const listProjectsTool = tool(
   },
 );
 
-const listEntriesTool = tool(
+const listEntriesToolDef = defineTool(
   "list_portfolio_entries",
   "List portfolio entries, optionally filtered by project and/or category (blog/article/collab/pr-post/email).",
   {
@@ -69,7 +70,7 @@ const listEntriesTool = tool(
   },
 );
 
-const getEntryTool = tool(
+const getEntryToolDef = defineTool(
   "get_portfolio_entry",
   "Get full detail for a single portfolio entry by id.",
   { id: z.string().describe("Entry id, from list_portfolio_entries") },
@@ -80,7 +81,7 @@ const getEntryTool = tool(
   },
 );
 
-const updateEntryTool = tool(
+const updateEntryToolDef = defineTool(
   "update_portfolio_entry",
   "Edit an existing portfolio entry by id — any of its fields, including moving it to a different project/category or changing its status. Only pass the fields you want to change.",
   {
@@ -109,7 +110,7 @@ function formatNoteSummary(note: PortfolioNote): string {
   return `[${note.id}] ${note.title} — ${note.tab} ${owner}\n  project: ${note.projectId}\n  updated: ${note.updatedAt}${preview ? `\n  preview: ${preview.replace(/\n/g, " ")}` : ""}`;
 }
 
-const listNotesTool = tool(
+const listNotesToolDef = defineTool(
   "list_portfolio_notes",
   'List portfolio notes — freeform markdown memory filed under "project-details" or "database" tabs, distinct from tracked deliverables. Optionally filter by project and/or tab. Results include only a short preview; call get_portfolio_note for the full markdown content. Check these for a project before starting substantial work on it — they hold durable, human-curated context (tech stack, credentials locations, target audience, config values) meant to persist across runs.',
   {
@@ -123,7 +124,7 @@ const listNotesTool = tool(
   },
 );
 
-const getNoteTool = tool(
+const getNoteToolDef = defineTool(
   "get_portfolio_note",
   "Get the full markdown content of a single portfolio note by id.",
   { id: z.string().describe("Note id, from list_portfolio_notes") },
@@ -141,7 +142,7 @@ const getNoteTool = tool(
   },
 );
 
-const updateNoteTool = tool(
+const updateNoteToolDef = defineTool(
   "update_portfolio_note",
   "Replace an existing portfolio note's title and/or content by id — content is a full overwrite, not an append, so call get_portfolio_note first if you need to preserve/merge existing text.",
   {
@@ -163,8 +164,8 @@ const updateNoteTool = tool(
  * category isn't bound here since none of the categories map 1:1 to a
  * single agent — the agent picks it per call.
  */
-function createEntryTool(agentKey: string) {
-  return tool(
+function createEntryToolDef(agentKey: string) {
+  return defineTool(
     `create_${agentKey}_portfolio_entry`,
     'Log a real deliverable (a published/drafted blog, article, collab, PR post, or email) against a portfolio project. For category "email", also pass recipient/subject/messageId from the real send confirmation — the Emails tab shows these as dedicated columns and exports them in its CSV. Call list_portfolio_projects first to find the right projectId — skip logging rather than guessing if no matching project exists.',
     {
@@ -190,22 +191,22 @@ function createEntryTool(agentKey: string) {
   );
 }
 
-const createSalesEntry = createEntryTool("sales");
-const createSeoEntry = createEntryTool("seo");
-const createAeoEntry = createEntryTool("aeo");
-const createPrEntry = createEntryTool("pr");
-const createEmailsEntry = createEntryTool("emails");
-const createManagerEntry = createEntryTool("manager");
-const createHrEntry = createEntryTool("hr");
-const createDeveloperEntry = createEntryTool("developer");
-const createAnalysisEntry = createEntryTool("analysis");
-const createCrmEntry = createEntryTool("crm");
-const createFinanceEntry = createEntryTool("finance");
-const createCalendarEntry = createEntryTool("calendar");
+const createSalesEntryDef = createEntryToolDef("sales");
+const createSeoEntryDef = createEntryToolDef("seo");
+const createAeoEntryDef = createEntryToolDef("aeo");
+const createPrEntryDef = createEntryToolDef("pr");
+const createEmailsEntryDef = createEntryToolDef("emails");
+const createManagerEntryDef = createEntryToolDef("manager");
+const createHrEntryDef = createEntryToolDef("hr");
+const createDeveloperEntryDef = createEntryToolDef("developer");
+const createAnalysisEntryDef = createEntryToolDef("analysis");
+const createCrmEntryDef = createEntryToolDef("crm");
+const createFinanceEntryDef = createEntryToolDef("finance");
+const createCalendarEntryDef = createEntryToolDef("calendar");
 
 /** Per-agent create tool for notes, mirroring createEntryTool's closure-bound-agentKey pattern. */
-function createNoteTool(agentKey: string) {
-  return tool(
+function createNoteToolDef(agentKey: string) {
+  return defineTool(
     `create_${agentKey}_portfolio_note`,
     'Save a new freeform markdown note against a portfolio project — durable memory under the "project-details" tab (facts about the project: tech stack, audience, goals, key decisions) or "database" tab (config-like key/value data, e.g. as a markdown list). Call list_portfolio_projects first to find the right projectId, and list_portfolio_notes to check a matching note doesn\'t already exist — prefer update_portfolio_note over creating a duplicate.',
     {
@@ -223,18 +224,18 @@ function createNoteTool(agentKey: string) {
   );
 }
 
-const createSalesNote = createNoteTool("sales");
-const createSeoNote = createNoteTool("seo");
-const createAeoNote = createNoteTool("aeo");
-const createPrNote = createNoteTool("pr");
-const createEmailsNote = createNoteTool("emails");
-const createManagerNote = createNoteTool("manager");
-const createHrNote = createNoteTool("hr");
-const createDeveloperNote = createNoteTool("developer");
-const createAnalysisNote = createNoteTool("analysis");
-const createCrmNote = createNoteTool("crm");
-const createFinanceNote = createNoteTool("finance");
-const createCalendarNote = createNoteTool("calendar");
+const createSalesNoteDef = createNoteToolDef("sales");
+const createSeoNoteDef = createNoteToolDef("seo");
+const createAeoNoteDef = createNoteToolDef("aeo");
+const createPrNoteDef = createNoteToolDef("pr");
+const createEmailsNoteDef = createNoteToolDef("emails");
+const createManagerNoteDef = createNoteToolDef("manager");
+const createHrNoteDef = createNoteToolDef("hr");
+const createDeveloperNoteDef = createNoteToolDef("developer");
+const createAnalysisNoteDef = createNoteToolDef("analysis");
+const createCrmNoteDef = createNoteToolDef("crm");
+const createFinanceNoteDef = createNoteToolDef("finance");
+const createCalendarNoteDef = createNoteToolDef("calendar");
 
 const SHARED_PORTFOLIO_TOOLS = [
   "mcp__portfolio__list_portfolio_projects",
@@ -307,42 +308,44 @@ export const PORTFOLIO_CALENDAR_TOOLS = [
   ...SHARED_PORTFOLIO_TOOLS,
 ];
 
+export const PORTFOLIO_TOOL_DEFS = [
+  listProjectsToolDef,
+  listEntriesToolDef,
+  getEntryToolDef,
+  updateEntryToolDef,
+  listNotesToolDef,
+  getNoteToolDef,
+  updateNoteToolDef,
+  createSalesEntryDef,
+  createSeoEntryDef,
+  createAeoEntryDef,
+  createPrEntryDef,
+  createEmailsEntryDef,
+  createManagerEntryDef,
+  createHrEntryDef,
+  createDeveloperEntryDef,
+  createAnalysisEntryDef,
+  createCrmEntryDef,
+  createFinanceEntryDef,
+  createCalendarEntryDef,
+  createSalesNoteDef,
+  createSeoNoteDef,
+  createAeoNoteDef,
+  createPrNoteDef,
+  createEmailsNoteDef,
+  createManagerNoteDef,
+  createHrNoteDef,
+  createDeveloperNoteDef,
+  createAnalysisNoteDef,
+  createCrmNoteDef,
+  createFinanceNoteDef,
+  createCalendarNoteDef,
+];
+
 export const portfolioServer = createSdkMcpServer({
   name: "portfolio",
   version: "1.0.0",
   instructions:
     'Tools for tracking content/deliverables (blogs, articles, collabs, PR posts, emails) and durable project memory (freeform markdown notes under "project-details"/"database" tabs) against product/project tabs in the Portfolio view. list_portfolio_projects first to find the right project — projects are human-curated tabs, agents don\'t create them. Before starting substantial work on a named project, call list_portfolio_notes for it — notes carry context (tech stack, target audience, key facts, config values) set once and meant to persist across runs, saving you from re-deriving or re-asking for it. Data here is only ever removed by explicit user/agent deletion — nothing auto-expires.',
-  tools: [
-    listProjectsTool,
-    listEntriesTool,
-    getEntryTool,
-    updateEntryTool,
-    listNotesTool,
-    getNoteTool,
-    updateNoteTool,
-    createSalesEntry,
-    createSeoEntry,
-    createAeoEntry,
-    createPrEntry,
-    createEmailsEntry,
-    createManagerEntry,
-    createHrEntry,
-    createDeveloperEntry,
-    createAnalysisEntry,
-    createCrmEntry,
-    createFinanceEntry,
-    createCalendarEntry,
-    createSalesNote,
-    createSeoNote,
-    createAeoNote,
-    createPrNote,
-    createEmailsNote,
-    createManagerNote,
-    createHrNote,
-    createDeveloperNote,
-    createAnalysisNote,
-    createCrmNote,
-    createFinanceNote,
-    createCalendarNote,
-  ],
+  tools: PORTFOLIO_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

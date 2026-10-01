@@ -14,7 +14,11 @@ import { sendGmailEmail } from "./gmail.js";
 import { sendWhatsappText } from "./whatsapp.js";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions";
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_CLAUDE_MODEL = "claude-3-5-haiku-latest";
 const DEFAULT_HANDOFF_EMAIL = "career@yarrowtech.co.in";
 const DEFAULT_HANDOFF_PHONE = "916293764220";
 const CUSTOM_QUOTE_FALLBACK = "This needs a custom quote. Please share your exact requirement.";
@@ -61,6 +65,18 @@ function getOpenAiApiKey(): string | undefined {
 
 function getOpenAiModel(): string {
   return getEnvValue("WHATSAPP_AGENT_OPENAI_MODEL")?.trim() || DEFAULT_OPENAI_MODEL;
+}
+
+function getDeepseekApiKey(): string | undefined {
+  return getEnvValue("DEEPSEEK_API_KEY")?.trim() || undefined;
+}
+
+function getDeepseekModel(): string {
+  return getEnvValue("DEEPSEEK_CEO_MODEL")?.trim() || DEFAULT_DEEPSEEK_MODEL;
+}
+
+function getClaudeApiKey(): string | undefined {
+  return getEnvValue("ANTHROPIC_API_KEY")?.trim() || undefined;
 }
 
 function getHandoffEmail(): string {
@@ -219,7 +235,11 @@ function extractOpenAiText(json: unknown): string | undefined {
 }
 
 function parseAgentReply(text: string): WhatsappReply {
-  const parsed = JSON.parse(text) as Partial<WhatsappReply>;
+  // DeepSeek/Claude aren't given OpenAI's strict-schema guarantee, so they
+  // occasionally wrap the JSON in a ```json ... ``` fence despite the
+  // "return only the requested JSON shape" instruction — strip it first.
+  const unfenced = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  const parsed = JSON.parse(unfenced) as Partial<WhatsappReply>;
   const reply = typeof parsed.reply === "string" ? parsed.reply.trim() : "";
   const handoffReason = typeof parsed.handoffReason === "string" ? parsed.handoffReason.trim() : "";
   return {
@@ -229,7 +249,7 @@ function parseAgentReply(text: string): WhatsappReply {
   };
 }
 
-async function generateOpenAiReply(text: string, knowledge: string): Promise<WhatsappReply> {
+async function generateReplyViaOpenAi(text: string, knowledge: string): Promise<WhatsappReply> {
   const apiKey = getOpenAiApiKey();
   if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
 
@@ -266,6 +286,113 @@ async function generateOpenAiReply(text: string, knowledge: string): Promise<Wha
   const output = extractOpenAiText(json);
   if (!output) throw new Error("OpenAI response had no output text.");
   return parseAgentReply(output);
+}
+
+/**
+ * DeepSeek's chat-completions endpoint is OpenAI-compatible but only
+ * supports a loose `json_object` response format (no strict schema
+ * enforcement like OpenAI's Responses API above), so the exact shape is
+ * spelled out in the prompt text and parseAgentReply() does the validation.
+ */
+async function generateReplyViaDeepseek(text: string, knowledge: string): Promise<WhatsappReply> {
+  const apiKey = getDeepseekApiKey();
+  if (!apiKey) throw new Error("DEEPSEEK_API_KEY is not set");
+
+  const systemPrompt = `${buildSystemPrompt(knowledge)}\n\nRespond with ONLY a JSON object matching this shape, no markdown fences: {"reply": string, "needsHumanHandoff": boolean, "handoffReason": string}`;
+
+  const res = await fetch(DEEPSEEK_CHAT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: getDeepseekModel(),
+      max_tokens: 350,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text },
+      ],
+    }),
+  });
+
+  const raw = await res.text();
+  const json = raw ? JSON.parse(raw) : {};
+  if (!res.ok) {
+    const error = (json as { error?: { message?: string } }).error?.message ?? `${res.status} ${raw}`;
+    throw new Error(`DeepSeek response failed: ${error}`);
+  }
+
+  const output = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content;
+  if (!output) throw new Error("DeepSeek response had no output text.");
+  return parseAgentReply(output);
+}
+
+/**
+ * Last link in the chain — plain Anthropic Messages API call (not the
+ * Claude Agent SDK, which is a full tool-calling engine unsuited to a
+ * single-shot text reply). No strict-schema support either; same
+ * prompt-spelled-out-shape approach as DeepSeek above.
+ */
+async function generateReplyViaClaude(text: string, knowledge: string): Promise<WhatsappReply> {
+  const apiKey = getClaudeApiKey();
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+
+  const systemPrompt = `${buildSystemPrompt(knowledge)}\n\nRespond with ONLY a JSON object matching this shape, no markdown fences: {"reply": string, "needsHumanHandoff": boolean, "handoffReason": string}`;
+
+  const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: DEFAULT_CLAUDE_MODEL,
+      max_tokens: 350,
+      system: systemPrompt,
+      messages: [{ role: "user", content: text }],
+    }),
+  });
+
+  const raw = await res.text();
+  const json = raw ? JSON.parse(raw) : {};
+  if (!res.ok) {
+    const error = (json as { error?: { message?: string } }).error?.message ?? `${res.status} ${raw}`;
+    throw new Error(`Claude response failed: ${error}`);
+  }
+
+  const output = (json as { content?: Array<{ type?: string; text?: string }> }).content?.find(
+    (block) => block.type === "text",
+  )?.text;
+  if (!output) throw new Error("Claude response had no output text.");
+  return parseAgentReply(output);
+}
+
+const REPLY_PROVIDERS: { name: string; configured: () => boolean; generate: (text: string, knowledge: string) => Promise<WhatsappReply> }[] = [
+  { name: "OpenAI", configured: () => !!getOpenAiApiKey(), generate: generateReplyViaOpenAi },
+  { name: "DeepSeek", configured: () => !!getDeepseekApiKey(), generate: generateReplyViaDeepseek },
+  { name: "Claude", configured: () => !!getClaudeApiKey(), generate: generateReplyViaClaude },
+];
+
+/**
+ * Tries each configured provider in order — OpenAI, then DeepSeek, then
+ * Claude — falling through on ANY failure from one to the next (no key set,
+ * out of credit, rate-limited, whatever), same pattern as the
+ * image-generation fallback chain in image-gen.ts.
+ */
+async function generateAgentReply(text: string, knowledge: string): Promise<WhatsappReply> {
+  const errors: string[] = [];
+  for (const provider of REPLY_PROVIDERS) {
+    if (!provider.configured()) continue;
+    try {
+      return await provider.generate(text, knowledge);
+    } catch (err) {
+      errors.push(`${provider.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new Error(`All WhatsApp reply providers failed:\n${errors.join("\n")}`);
 }
 
 function buildHandoffNotification(input: {
@@ -334,8 +461,9 @@ export function markMessageSeen(id: string): boolean {
 
 /**
  * Handles one inbound WhatsApp text message. It records the lead first, asks
- * OpenAI for a strict answer grounded in the Yarrowtech knowledge files, then
- * alerts a human when the model marks the reply as needing review.
+ * the reply-provider chain (OpenAI -> DeepSeek -> Claude) for an answer
+ * grounded in the Yarrowtech knowledge files, then alerts a human when the
+ * model marks the reply as needing review.
  */
 export async function handleIncomingWhatsappMessage(
   from: string,
@@ -348,7 +476,7 @@ export async function handleIncomingWhatsappMessage(
 
   try {
     const knowledge = await loadKnowledge();
-    const agentReply = await generateOpenAiReply(text, knowledge);
+    const agentReply = await generateAgentReply(text, knowledge);
     const result = await sendWhatsappText(from, agentReply.reply);
     if (!result.ok) {
       console.error(`[whatsapp-autoreply] failed to reply to ${from}: ${result.error}`);

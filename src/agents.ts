@@ -1,7 +1,8 @@
 import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { LINEAR_TOOLS } from "./tools/linear.js";
-import { createDocumentsServer } from "./tools/documents.js";
+import { createDocumentsServer, createDocumentToolDefs } from "./tools/documents.js";
 import { GMAIL_TOOLS, isGmailConnected } from "./tools/gmail.js";
+import { SES_TOOLS, isSesConnected } from "./tools/ses.js";
 import { LINKEDIN_TOOLS, isLinkedinConnected } from "./tools/linkedin.js";
 import { FACEBOOK_TOOLS, isFacebookConnected } from "./tools/facebook.js";
 import { ZERNIO_TOOLS, isZernioConnected } from "./tools/zernio.js";
@@ -33,6 +34,7 @@ import {
   PORTFOLIO_CALENDAR_TOOLS,
 } from "./tools/portfolio.js";
 import { MEMORY_READ_TOOLS, MEMORY_AGENT_TOOLS } from "./tools/memory.js";
+import { DEVELOPER_INFO_BLOCK } from "./developer/index.js";
 
 export interface DepartmentMeta {
   key: string;
@@ -126,7 +128,7 @@ When given a task:
 3. Write the full deliverable and save it with create_document — don't just describe it in chat.
 4. If email drafting tools are available and the task calls for it (e.g. an onboarding welcome email), draft it — never send without being explicitly told to.
 5. Reply with a short summary of what you produced and any open questions (e.g. who owns rollout, what's specific to this company that you had to assume).`,
-  tools: [docTool("hr"), ...PORTFOLIO_HR_TOOLS, ...MEMORY_READ_TOOLS, ...(isGmailConnected() ? GMAIL_TOOLS : [])],
+  tools: [docTool("hr"), ...PORTFOLIO_HR_TOOLS, ...MEMORY_READ_TOOLS, ...(isGmailConnected() ? GMAIL_TOOLS : []), ...(isSesConnected() ? SES_TOOLS : [])],
   ...SYNC,
 };
 
@@ -190,6 +192,7 @@ When given a task:
     ...MEMORY_READ_TOOLS,
     ...CRM_OUTREACH_TOOLS,
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
+    ...(isSesConnected() ? SES_TOOLS : []),
     ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
     ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
     ...(isZernioConnected() ? ZERNIO_TOOLS : []),
@@ -223,6 +226,7 @@ When given a task:
     "WebSearch",
     "WebFetch",
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
+    ...(isSesConnected() ? SES_TOOLS : []),
     ...(isInstagramConnected() ? INSTAGRAM_TOOLS : []),
     ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
     ...(isWhatsappConnected() ? WHATSAPP_TOOLS : []),
@@ -296,17 +300,23 @@ ${redditPostingInstructions(5)}
 
 const emailsAgent: AgentDefinition = {
   description:
-    "Emails agent. Reads the connected Gmail inbox and drafts or sends email on the CEO's behalf.",
-  prompt: `You are the Emails agent, reporting to a CEO agent. You have access to the connected Gmail inbox.
+    "Emails agent. Reads the connected Gmail inbox and drafts or sends email on the CEO's behalf. If AWS SES is also connected (a second, independent send-only channel from no-reply@yarrowtech.co.in), can send/bulk-send through it too — SES has no inbox to read or drafts, it's send-only.",
+  prompt: `You are the Emails agent, reporting to a CEO agent. You have access to the connected Gmail inbox, and — if configured — a second, independent send-only channel via AWS SES (no-reply@yarrowtech.co.in, tools suffixed _ses_).
+
+If SES tools (send_ses_email, send_bulk_ses_email, etc.) are available: use them only when the user asks to send from no-reply@yarrowtech.co.in or otherwise explicitly asks for SES/that address — default to Gmail for everything else, since Gmail is the only channel with inbox reading and drafts. SES has no draft step, so confirm with the user before send_ses_email/send_bulk_ses_email exactly as you would before send_email/send_bulk_email.
 
 When given a task:
 1. If asked to check or summarize the inbox, use list_recent_emails / read_email.
 2. If asked to reply or write to someone, default to create_email_draft — a draft is safe and reversible.
 3. Only use send_email when explicitly told to send (not just draft) — sending is irreversible.
-4. After each send_email call, check its result for a real message ID before believing it worked — a call that comes back with no ID (empty or missing output) did not confirm a send, even if no error was raised. If in doubt, verify with list_recent_emails (e.g. search in:sent for the subject) before reporting it as sent.
+3a. If the body you're sending came from an HTML source — a .html file you read/were given, a designed template, anything containing tags like <html>/<img>/<a href> — pass that markup through UNCHANGED as body and set isHtml: true. Never flatten it into plain-text prose (stripping tags, dropping images, rewriting "<a href=...>Join</a>" as "Join -> url") — that silently turns a designed template into a bare-text email even though the send itself "succeeds." isHtml only applies to send_email/create_email_draft/create_email_template/send_bulk_email — text extracted by the file-attach flow keeps its original tags, so just forward it as-is.
+3a-i. If an attachment note gives a "path" for an .html file (e.g. "workspace/uploads/vendor_email_template.html"), use import_email_template_from_file with that exact path to save it as a template — do NOT type the HTML back out yourself via create_email_template. Retyping a long HTML document through your own generation is unreliable even when you intend to copy it exactly: it drifts partway through and later sections silently collapse into plain text. import_email_template_from_file reads the file's bytes directly, so the result is always byte-identical to the source.
+3b. For "send this to N people" (more than one or two recipients), use create_email_template (once, with isHtml set correctly) + send_bulk_email instead of looping send_email per recipient — it fills {{name}}/{{company}}/etc. per recipient and rate-limits the sends automatically.
+3c. create_email_template stores a one-time COPY of whatever body you give it — it is not linked back to a source file. If you're asked to re-send using "the template" and a saved one already exists (list_email_templates), do NOT assume it's still current, especially if the user mentions editing the template file or content since it was created: re-read the actual source (the file, or whatever the user just gave you) and call update_email_template on the existing id with the fresh content before sending — otherwise send_bulk_email/send_email will silently reuse the stale copy and the styling/content regresses even though nothing you did this turn was wrong.
+4. After each send_email/send_bulk_email call, check its result for a real message ID before believing it worked — a call that comes back with no ID (empty or missing output) did not confirm a send, even if no error was raised. If in doubt, verify with list_recent_emails (e.g. search in:sent for the subject) before reporting it as sent.
 5. If a confirmed-sent email is tied to a specific product/project (e.g. an outreach or announcement email), log it on the Portfolio (category "email") via create_emails_portfolio_entry — call list_portfolio_projects first and only log against a project that already exists. Include recipient, subject, and the real messageId from the send confirmation (step 4) — the Emails tab shows these as dedicated columns and exports them in its CSV, so skipping them leaves that row blank there.
 6. Reply with a short, honest summary: confirmed sends get their real message ID quoted; anything you couldn't verify gets reported as "sent but unconfirmed," never rounded up to a plain success.`,
-  tools: [...(isGmailConnected() ? GMAIL_TOOLS : []), ...PORTFOLIO_EMAILS_TOOLS, ...MEMORY_READ_TOOLS],
+  tools: [...(isGmailConnected() ? GMAIL_TOOLS : []), ...(isSesConnected() ? SES_TOOLS : []), ...PORTFOLIO_EMAILS_TOOLS, ...MEMORY_READ_TOOLS],
   ...SYNC,
 };
 
@@ -335,6 +345,7 @@ When given a task:
     "WebSearch",
     "WebFetch",
     ...(isGmailConnected() ? GMAIL_TOOLS : []),
+    ...(isSesConnected() ? SES_TOOLS : []),
     ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
     ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
     ...(isZernioConnected() ? ZERNIO_TOOLS : []),
@@ -379,9 +390,15 @@ Nothing you do here can delete an existing entry — there is no delete tool ava
   ...SYNC,
 };
 
-/** Built fresh per run so Gmail-dependent tool lists reflect current connection state. */
+/**
+ * Built fresh per run so Gmail-dependent tool lists reflect current
+ * connection state. Also appends DEVELOPER_INFO_BLOCK to every specialist's
+ * prompt here, in one place, rather than mutating the shared agent consts
+ * above (which are module-level singletons reused across calls — mutating
+ * `.prompt` in place would re-append the block on every subsequent call).
+ */
 export function buildAgentsRegistry(): Record<string, AgentDefinition> {
-  return {
+  const base: Record<string, AgentDefinition> = {
     manager: managerAgent,
     hr: hrAgent,
     developer: developerAgent,
@@ -396,14 +413,20 @@ export function buildAgentsRegistry(): Record<string, AgentDefinition> {
     calendar: calendarAgent,
     memory: memoryAgent,
   };
+  const registry: Record<string, AgentDefinition> = {};
+  for (const [key, agent] of Object.entries(base)) {
+    registry[key] = { ...agent, prompt: `${agent.prompt}\n\n${DEVELOPER_INFO_BLOCK}` };
+  }
+  return registry;
 }
 
 // Module-level singleton, built once at import time — matches linearServer's
 // pattern for consistency (not load-bearing for the background-execution fix
 // above, but no reason to rebuild it per run either).
-export const documentsServer = createDocumentsServer(
-  DEPARTMENTS.filter((d) => DOCUMENT_AGENT_KEYS.includes(d.key)).map((d) => ({ key: d.key, label: d.label })),
-);
+const documentAgents = DEPARTMENTS.filter((d) => DOCUMENT_AGENT_KEYS.includes(d.key)).map((d) => ({ key: d.key, label: d.label }));
+export const documentsServer = createDocumentsServer(documentAgents);
+/** Same per-department document tools as documentsServer, as descriptors for the fallback-provider loop. */
+export const documentToolDefs = createDocumentToolDefs(documentAgents);
 
 /** Union of every tool name any specialist might call, for the top-level auto-approve list. */
 export function allSpecialistToolNames(): string[] {

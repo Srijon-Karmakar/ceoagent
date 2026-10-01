@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getEnvValue, updateSettings } from "../server/settings.js";
+import { defineTool } from "../providers/toolAdapter.js";
 
 // Deliberately an allowlist, not "post to whatever subreddit the model
 // names" — same reasoning as tools/n8n.ts's workflow allowlist: this tool
@@ -70,7 +71,7 @@ async function getAccessToken(): Promise<string> {
   return token.token;
 }
 
-const listRedditSubreddits = tool(
+const listRedditSubredditsDef = defineTool(
   "list_reddit_subreddits",
   "List the subreddits this agent is allowed to post to. create_reddit_post only accepts a subreddit from this list — never an arbitrary one.",
   {},
@@ -85,7 +86,7 @@ const listRedditSubreddits = tool(
   },
 );
 
-const createRedditPost = tool(
+const createRedditPostDef = defineTool(
   "create_reddit_post",
   "Publish a text (self) post to a subreddit — this goes live immediately and publicly, with no confirmation step, so only call it once the post is genuinely finished and ready. Only accepts a subreddit from list_reddit_subreddits.",
   {
@@ -156,7 +157,7 @@ interface RedditSearchHit {
   over_18?: boolean;
 }
 
-const searchSubreddits = tool(
+const searchSubredditsDef = defineTool(
   "search_subreddits",
   "Search Reddit for subreddits matching a topic — for finding a relevant community that isn't already on the allowed list. This only searches, it can't post; a subreddit found here still needs the user's explicit approval (then add_approved_subreddit) before create_reddit_post will accept it.",
   {
@@ -185,7 +186,7 @@ const searchSubreddits = tool(
   },
 );
 
-const addApprovedSubreddit = tool(
+const addApprovedSubredditDef = defineTool(
   "add_approved_subreddit",
   "Permanently add a subreddit to the allowed list so create_reddit_post can use it. Only call this after the user has explicitly approved that specific subreddit in their reply to you — never based on your own judgment alone, since this changes what the account is allowed to post to going forward.",
   { subreddit: z.string().describe("Subreddit name, no r/ prefix") },
@@ -207,10 +208,12 @@ export const REDDIT_TOOLS = [
   "mcp__reddit__add_approved_subreddit",
 ];
 
+export const REDDIT_TOOL_DEFS = [listRedditSubredditsDef, createRedditPostDef, searchSubredditsDef, addApprovedSubredditDef];
+
 export const redditServer = createSdkMcpServer({
   name: "reddit",
   version: "1.0.0",
   instructions:
     "Tools for publishing text posts to pre-approved subreddits. list_reddit_subreddits first — create_reddit_post only accepts a subreddit from that list, and publishes immediately with no confirmation step. If nothing on that list fits, search_subreddits can find candidates, but a new one needs the user's explicit approval (then add_approved_subreddit) before it can be posted to.",
-  tools: [listRedditSubreddits, createRedditPost, searchSubreddits, addApprovedSubreddit],
+  tools: REDDIT_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });
