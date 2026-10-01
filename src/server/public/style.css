@@ -2966,6 +2966,8 @@ button:disabled {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   z-index: 60;
   display: flex;
   align-items: center;
@@ -2981,6 +2983,8 @@ button:disabled {
   max-width: 360px;
   width: 100%;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
 .confirm-modal h3 {
@@ -2994,6 +2998,18 @@ button:disabled {
   color: var(--text-muted);
   font-size: 14px;
   line-height: 1.5;
+}
+
+.confirm-modal:not(.folder-modal):not(.schedule-modal):not(.lead-modal):not(.playbook-modal):not(.portfolio-modal) h3,
+.confirm-modal:not(.folder-modal):not(.schedule-modal):not(.lead-modal):not(.playbook-modal):not(.portfolio-modal) .confirm-modal-message,
+.confirm-modal:not(.folder-modal):not(.schedule-modal):not(.lead-modal):not(.playbook-modal):not(.portfolio-modal) .confirm-modal-message strong {
+  color: #ffffff;
+}
+
+.confirm-modal:not(.folder-modal):not(.schedule-modal):not(.lead-modal):not(.playbook-modal):not(.portfolio-modal) .confirm-btn-cancel {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
 }
 
 .confirm-modal-actions {
@@ -7977,5 +7993,466 @@ html[data-theme="dark"] .memory-hero-input-shell {
 
   .header-date-label {
     display: none;
+  }
+}
+
+/* ============ Mobile layout hardening ============
+ * Keep the desktop/tablet structure exactly as-is, but make every dense view
+ * usable inside the phone shell: the header compresses, card views stack,
+ * wide operational surfaces scroll inside their own panels, and dialogs never
+ * exceed the viewport. */
+@media (max-width: 719.98px) {
+  :root {
+    --radius: 18px;
+    --radius-lg: 20px;
+    --radius-sm: 14px;
+    --content-max: 100%;
+  }
+
+  html,
+  body {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  #app {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .layout,
+  .content-area,
+  .body-row,
+  .main {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .content-area {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    padding: 12px 10px 8px;
+  }
+
+  .brand {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .brand-logo {
+    max-width: 100%;
+    font-size: clamp(20px, 7vw, 24px);
+    line-height: 1.08;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .header-actions {
+    max-width: min(210px, 54vw);
+    gap: 5px;
+  }
+
+  .header-user-btn {
+    width: 32px;
+    max-width: 32px;
+    height: 32px;
+  }
+
+  .account-popover {
+    position: fixed;
+    top: 58px;
+    right: 10px;
+    width: min(320px, calc(100vw - 20px));
+  }
+
+  .body-row {
+    flex: 1 1 auto;
+    padding: 0 10px 10px;
+    overflow: hidden;
+  }
+
+  .main {
+    padding: 8px 0 12px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dashboard,
+  .run-detail,
+  .accounts-view,
+  .settings-view,
+  .calendar-view,
+  .files-view,
+  .documents-view,
+  .tools-view,
+  .crm-view,
+  .playbook-view,
+  .portfolio-view,
+  .memory-hero {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+  }
+
+  .dashboard,
+  .memory-hero {
+    height: auto;
+    min-height: 0;
+  }
+
+  .composer,
+  .tasklist-card,
+  .bento-cell,
+  .panel,
+  .log,
+  .accounts-view,
+  .settings-view,
+  .calendar-view,
+  .files-view,
+  .documents-view,
+  .tools-view,
+  .crm-view,
+  .playbook-view,
+  .portfolio-view {
+    border-radius: var(--radius-lg);
+  }
+
+  .composer {
+    min-height: 0;
+    padding: 16px;
+  }
+
+  .composer h1,
+  .sidebar h1,
+  .sidebar h2 {
+    font-size: 20px;
+  }
+
+  #goal-form {
+    margin-top: 14px;
+    padding-bottom: 46px;
+  }
+
+  #goal-input {
+    height: clamp(132px, 27dvh, 190px);
+    min-height: 132px;
+    font-size: 15px;
+  }
+
+  .goal-actions {
+    right: 6px;
+    bottom: 5px;
+  }
+
+  .bento-grid,
+  .documents-list,
+  .files-view,
+  .calendar-view,
+  .crm-stats-grid,
+  .crm-kpi-grid,
+  .portfolio-notes-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bento-grid {
+    height: auto;
+    gap: 10px;
+  }
+
+  .bento-cell,
+  .bento-hero {
+    min-height: 136px;
+  }
+
+  .bento-value,
+  .bento-hero .bento-value {
+    font-size: clamp(42px, 15vw, 58px);
+  }
+
+  .bento-ring-wrap {
+    top: 14px;
+    right: 14px;
+  }
+
+  .bento-ring {
+    width: 78px;
+    height: 78px;
+  }
+
+  .section-head,
+  .files-toolbar,
+  .calendar-toolbar,
+  .crm-toolbar,
+  .crm-filter-bar,
+  .playbook-toolbar,
+  .portfolio-toolbar,
+  .portfolio-category-tabs,
+  .memory-browser-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-head h2 {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .section-head .ai-button,
+  .portfolio-toolbar .ai-button,
+  .playbook-toolbar .ai-button {
+    width: auto;
+  }
+
+  .run-detail {
+    min-height: 100%;
+    height: auto;
+    padding: 10px 0;
+  }
+
+  .run-header {
+    padding: 0 2px;
+  }
+
+  .run-actions {
+    margin-left: auto;
+  }
+
+  .panels {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .log {
+    height: clamp(320px, 58dvh, 620px);
+    max-height: none;
+  }
+
+  .side-panels .tasks-panel,
+  .tasks-panel {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .reply-form {
+    align-items: stretch;
+  }
+
+  .reply-form textarea {
+    min-height: 44px;
+  }
+
+  .documents-list {
+    gap: 10px;
+  }
+
+  .document-card {
+    align-items: flex-start;
+  }
+
+  .document-card-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .files-view,
+  .calendar-view {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .files-tree,
+  .files-preview-pane,
+  .mini-calendar,
+  .detail-panel,
+  .tasks-panel {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .files-preview-pane,
+  .detail-panel {
+    min-height: 280px;
+  }
+
+  .files-table-wrap,
+  .lead-table-wrap,
+  .playbook-table-wrap,
+  .portfolio-table-wrap,
+  .lead-import-preview,
+  .calendar-grid-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .files-table,
+  .lead-table,
+  .playbook-table,
+  .portfolio-table,
+  .lead-import-table {
+    min-width: 640px;
+  }
+
+  .calendar-main,
+  .calendar-grid,
+  .content-calendar-grid {
+    min-width: 0;
+  }
+
+  .calendar-day,
+  .content-calendar-day {
+    min-width: 0;
+    padding: 6px 4px;
+  }
+
+  .calendar-event,
+  .content-calendar-event {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kanban-board {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .kanban-column {
+    flex: 0 0 min(86vw, 320px);
+    min-width: 0;
+    scroll-snap-align: start;
+  }
+
+  .lead-card,
+  .portfolio-note-card,
+  .memory-entry-card {
+    min-width: 0;
+  }
+
+  .portfolio-project-tabs,
+  .segmented-toggle,
+  .category-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .portfolio-note-detail-head,
+  .memory-entry-detail-head {
+    flex-wrap: wrap;
+  }
+
+  .portfolio-note-title-input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .confirm-backdrop {
+    align-items: flex-end;
+    padding: 12px;
+  }
+
+  .confirm-modal {
+    max-width: none;
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    padding: 18px;
+  }
+
+  .lead-modal,
+  .schedule-modal,
+  .portfolio-modal,
+  .playbook-modal {
+    max-width: none;
+    width: 100%;
+  }
+
+  .confirm-modal-actions {
+    flex-wrap: wrap;
+  }
+
+  .confirm-modal-actions .confirm-btn {
+    flex: 1 1 auto;
+    min-width: 120px;
+  }
+
+  .guarded-delete-input,
+  .folder-modal input[type="text"],
+  .schedule-modal input,
+  .schedule-modal select,
+  .schedule-modal textarea,
+  .lead-modal input,
+  .lead-modal select,
+  .lead-modal textarea,
+  .portfolio-modal input,
+  .portfolio-modal select,
+  .portfolio-modal textarea,
+  .playbook-modal input,
+  .playbook-modal select,
+  .playbook-modal textarea {
+    max-width: 100%;
+    font-size: 16px;
+  }
+
+  .icon-rail {
+    height: calc(66px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+@media (max-width: 420px) {
+  .app-header {
+    grid-template-columns: 1fr;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
+    max-width: 100%;
+    margin-left: 0;
+  }
+
+  .header-date-badge {
+    order: 10;
+  }
+
+  .nav-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .run-header {
+    gap: 6px;
+  }
+
+  .run-meta {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  .document-card {
+    flex-wrap: wrap;
+  }
+
+  .document-card-actions {
+    width: 100%;
+    flex-direction: row;
+    justify-content: flex-end;
   }
 }
