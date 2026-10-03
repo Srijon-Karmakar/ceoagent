@@ -1054,6 +1054,7 @@ function downloadFileName(title: string, ext: string): string {
   const base = title
     .trim()
     .replace(/[/\\?%*:|"<>]/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
     .replace(/\s+/g, "-")
     .slice(0, 80) || "document";
   return `${base}.${ext}`;

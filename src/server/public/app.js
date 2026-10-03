@@ -1999,6 +1999,39 @@ function renderControlIcon(icon, label) {
   return `<i data-lucide="${icon}"></i>`;
 }
 
+// A department's animated "face" — a metallic gradient sphere + two eyes,
+// colored from its existing DEPARTMENTS[].color (see deptColor()) and
+// expressioned via data-mood (idle/watching/thinking/analysing/done/error —
+// see the .bot-face rules in style.css). Three independent animation
+// layers run at once: eye blink, a gentle idle float, and a metallic shine
+// sweep (bot-blink/bot-float/bot-shine in style.css). Reused at icon-rail,
+// department-hero, and run-detail size — one function, one markup shape, so
+// every size/mood stays in sync by construction.
+//
+// Each department moves on its own schedule, not a shared one: a stable
+// hash of its key (not Math.random()) drives animation-duration/-delay for
+// all three layers, with different multipliers so blink/float/shine don't
+// sync to each other either. Stable because render() rebuilds this markup
+// from scratch on every SSE event / state change — Math.random() would
+// restart (and desync) every bot's cycle on every single render.
+function botFaceMarkup(deptKey, { size = 44, mood = "idle" } = {}) {
+  const accent = deptColor(deptKey) || "var(--accent)";
+  let seed = 0;
+  for (const ch of deptKey || "") seed += ch.charCodeAt(0);
+  const blinkDur = (4.4 + (seed % 9) * 0.35).toFixed(2);
+  const blinkDelay = (-((seed % 11) * 0.6)).toFixed(2);
+  const floatDur = (3.4 + (seed % 7) * 0.4).toFixed(2);
+  const floatDelay = (-((seed % 5) * 0.9)).toFixed(2);
+  const shineDur = (5.5 + (seed % 6) * 0.9).toFixed(2);
+  const shineDelay = (-((seed % 8) * 1.1)).toFixed(2);
+  const eye = `<span class="bot-eye" style="animation-duration:${blinkDur}s;animation-delay:${blinkDelay}s"></span>`;
+  const faceStyle =
+    `--bot-size:${size}px;--bot-accent:${escapeHtml(accent)};` +
+    `--bot-shine-dur:${shineDur}s;--bot-shine-delay:${shineDelay}s;` +
+    `animation-duration:${floatDur}s;animation-delay:${floatDelay}s`;
+  return `<span class="bot-face" data-mood="${escapeHtml(mood)}" style="${faceStyle}">${eye}${eye}</span>`;
+}
+
 function destroyMemoryOrb() {
   if (memoryOrbCleanup) {
     memoryOrbCleanup();
@@ -2067,11 +2100,12 @@ function syncMemoryHeroInputUi() {
   }
 }
 
-function navButton(key, label, icon, isActive, viewObj, accentColor) {
+function navButton(key, label, icon, isActive, viewObj, accentColor, isBot) {
   const style = accentColor ? ` style="--icon-accent:${accentColor}"` : "";
+  const content = isBot ? botFaceMarkup(key, { size: 34 }) : renderControlIcon(icon, label);
   return `
-    <button class="nav-icon${isActive ? " active" : ""}" data-nav='${escapeHtml(JSON.stringify(viewObj))}' data-label="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"${style}>
-      ${renderControlIcon(icon, label)}
+    <button class="nav-icon${isActive ? " active" : ""}${isBot ? " nav-icon--bot" : ""}" data-nav='${escapeHtml(JSON.stringify(viewObj))}' data-label="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"${style}>
+      ${content}
     </button>
   `;
 }
@@ -2107,6 +2141,7 @@ function renderIconRail() {
         state.view.type === "department" && state.view.key === d.key,
         { type: "department", key: d.key },
         d.color[state.theme],
+        true,
       );
     })
     .join("");
@@ -2408,9 +2443,29 @@ function renderMain() {
     if (state.view.type === "overview") return renderOverviewDashboard();
     if (state.view.type === "department" && state.view.key === "calendar") return renderCalendarView();
     if (state.view.type === "department" && state.view.key === "crm") return renderCrmView();
+    if (state.view.type === "department") return renderDeptHero(state.view.key);
     return `<div class="empty-state"><p>Submit a goal to start, or pick a past run from the history.</p></div>`;
   }
   return renderRunDetail();
+}
+
+// Replaces the bare "Submit a goal..." placeholder for every department
+// without its own bespoke dashboard (everything except Memory/Calendar/CRM,
+// handled above). Starts idle; the #goal-input listener in attachHandlers()
+// flips data-mood to "watching" directly via the DOM (no re-render) while
+// the user is typing — see the comment there for why a full render() isn't
+// used. "thinking/done/error" aren't reachable here: the instant a run
+// exists this branch stops being rendered at all (see renderMain() above),
+// so that reactivity lives in renderRunDetail() instead.
+function renderDeptHero(key) {
+  const meta = departmentMeta(key);
+  return `
+    <div class="dept-hero" id="dept-hero">
+      ${botFaceMarkup(key, { size: 128 })}
+      <p class="dept-hero-tagline">${escapeHtml(meta?.tagline ?? "")}</p>
+      <p class="dept-hero-hint">Submit a goal to start, or pick a past run from the history.</p>
+    </div>
+  `;
 }
 
 // A cell with a label (only the hero has one, "Overview") gets two direct
@@ -2578,9 +2633,12 @@ function renderRunDetail() {
     .filter(Boolean)
     .join(" · ");
 
+  const runMood = { running: "thinking", success: "done", error: "error" }[run.status] ?? "idle";
+
   return `
     <div class="run-detail">
       <header class="run-header">
+        ${botFaceMarkup(run.agentKey, { size: 26, mood: runMood })}
         <span class="status-badge ${run.status}">${statusLabel(run.status)}</span>
         ${run.archived ? `<span class="status-badge archived">Archived</span>` : ""}
         ${run.pinned ? `<span class="status-badge pinned">Pinned</span>` : ""}
@@ -6114,6 +6172,11 @@ function attachHandlers() {
     // whatever was typed instead of starting the textarea blank.
     goalInputEl?.addEventListener("input", () => {
       state.goalDrafts[goalDraftKey(state.view)] = goalInputEl.value;
+      // Flips the department hero's bot face to "watching" while there's a
+      // draft, directly via the DOM — deliberately not a render() (see the
+      // comment above on why #goal-input isn't state-controlled).
+      const heroBot = document.querySelector("#dept-hero .bot-face");
+      if (heroBot) heroBot.dataset.mood = goalInputEl.value.trim() ? "watching" : "idle";
     });
   }
 

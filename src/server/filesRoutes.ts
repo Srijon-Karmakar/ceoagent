@@ -77,7 +77,8 @@ filesRouter.get("/raw", async (req, res) => {
     const name = resolved.absPath.split(/[\\/]/).pop() ?? "file";
     res.setHeader("Content-Type", mimeFor(name));
     if (req.query.download === "1") {
-      res.setHeader("Content-Disposition", `attachment; filename="${name.replace(/"/g, "")}"`);
+      const safeName = name.replace(/"/g, "").replace(/[^\x20-\x7E]/g, "") || "file";
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
     }
     res.sendFile(resolved.absPath);
   } catch (err) {

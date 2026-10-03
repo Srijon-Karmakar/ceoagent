@@ -963,7 +963,10 @@ html[data-theme="dark"] .account-popover {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 25;
+  /* Above .app-header's z-index:5000 (and its account/playbook popovers at
+     6000) — the drawer is a full-screen overlay and must cover the header
+     it slides out from under, not sit behind it. */
+  z-index: 6001;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
@@ -995,7 +998,7 @@ html[data-theme="dark"] .account-popover {
   left: 0;
   transform: translateX(-100%);
   transition: transform 0.18s ease;
-  z-index: 30;
+  z-index: 6002; /* above .sidebar-backdrop, same reasoning as there */
 }
 
 .sidebar.open {
@@ -6457,14 +6460,25 @@ body::before {
   background: url("/asset/pipe.svg") no-repeat center / contain;
 }
 
+/* .icon-rail and .sidebar are deliberately excluded here — both set their
+ * own `position` per breakpoint (fixed on mobile for the bottom tab bar /
+ * off-canvas drawer, static on desktop), and this blanket `position:
+ * relative` would silently clobber that, breaking the fixed positioning
+ * everywhere below 720px. They get their own z-index instead, directly on
+ * their position:fixed rules above.
+ *
+ * .body-row is excluded too: giving it its own z-index:1 stacking context
+ * would trap its fixed-position children (.sidebar, .sidebar-backdrop)
+ * inside that context, capping them at "z-index 1" no matter how high their
+ * own z-index goes — so the mobile drawer could never paint above
+ * .app-header's z-index:5000 (see below). Staying non-positioned lets those
+ * children escape straight into .content-area's stacking context instead,
+ * where their own z-index actually competes with the header's. */
 #app,
 .layout,
 .content-area,
-.icon-rail,
 .app-header,
-.body-row,
 .main,
-.sidebar,
 .dashboard {
   position: relative;
   z-index: 1;
@@ -8455,4 +8469,282 @@ html[data-theme="dark"] .memory-hero-input-shell {
     flex-direction: row;
     justify-content: flex-end;
   }
+}
+
+/* ============ Bot faces ============
+ * One reusable "face" — a gradient sphere + two eyes — reused at three
+ * sizes (icon-rail, run-detail status, department hero) and driven by a
+ * single department color via --bot-accent, the same inline-custom-property
+ * convention as --icon-accent/--dept-accent elsewhere in this file. Every
+ * size shares the same markup (see botFaceMarkup() in app.js); only
+ * --bot-size and --bot-accent change per instance, and eye geometry is
+ * expressed in calc()s off --bot-size so nothing needs a per-size class. */
+/* Metallic finish: a tight specular glint (layer 1) laid over the hue
+ * shading (layer 2, pushed to higher contrast than a flat plastic sphere
+ * would use — more white in the highlight, more black in the shadow), plus
+ * a second inset highlight near the top simulating a reflected light band.
+ * The moving glint itself comes from .bot-face::after below (bot-shine). */
+.bot-face {
+  --bot-size: 44px;
+  position: relative;
+  width: var(--bot-size);
+  height: var(--bot-size);
+  flex-shrink: 0;
+  overflow: hidden; /* clips the .bot-face::after shine sweep to the circle */
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--bot-size) * 0.14);
+  background:
+    radial-gradient(circle at 27% 19%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.22) 9%, transparent 22%),
+    radial-gradient(
+      circle at 38% 32%,
+      color-mix(in srgb, var(--bot-accent, var(--accent)) 50%, white),
+      var(--bot-accent, var(--accent)) 48%,
+      color-mix(in srgb, var(--bot-accent, var(--accent)) 72%, black) 100%
+    );
+  box-shadow:
+    inset 0 calc(var(--bot-size) * -0.16) calc(var(--bot-size) * 0.22) rgba(0, 0, 0, 0.55),
+    inset 0 calc(var(--bot-size) * 0.1) calc(var(--bot-size) * 0.12) rgba(255, 255, 255, 0.3);
+}
+
+/* Idle float: the whole sphere bobs gently — uses the `translate` property
+ * rather than `transform`, deliberately, so it composes with (instead of
+ * fighting) the separate transform:scale() on hover/active below; the two
+ * are independent CSS properties that apply together. Duration/delay come
+ * in via inline style per instance (see botFaceMarkup() in app.js), seeded
+ * from the department key so each bot bobs at its own rate.
+ *
+ * Split into longhands (not the `animation` shorthand) specifically so the
+ * hover rule below can extend animation-name to add bot-look without
+ * re-stating — and so overriding — the inline duration/delay. */
+@media (prefers-reduced-motion: no-preference) {
+  .bot-face {
+    animation-name: bot-float;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    animation-duration: 4s; /* inline style overrides this per instance */
+    transition: rotate 0.25s ease; /* eases bot-look's rotate back to 0 on hover-out */
+  }
+}
+
+@keyframes bot-float {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 calc(var(--bot-size) * -0.07); }
+}
+
+/* Hover: the head turns to "look" side to side, in addition to (not instead
+ * of) the idle float — animation-name becomes a 2-item list, and since the
+ * inline animation-duration/-delay stay single values, they apply to BOTH
+ * listed animations (CSS repeats a shorter list to match animation-name's
+ * length). That means bot-look inherits the same per-department pacing as
+ * the float rather than needing its own seed — one more place every agent
+ * ends up moving at its own characteristic speed, for free. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .bot-face:hover {
+    animation-name: bot-float, bot-look;
+  }
+}
+
+@keyframes bot-look {
+  0%, 100% { rotate: 0deg; }
+  25% { rotate: -9deg; }
+  50% { rotate: 0deg; }
+  75% { rotate: 9deg; }
+}
+
+/* Metallic shine sweep: a diagonal highlight band that mostly sits
+ * off-canvas (clipped by .bot-face's overflow:hidden) and passes across
+ * once per cycle — the "glint" that reads as polished metal rather than
+ * matte plastic. Timing comes from --bot-shine-dur/-delay custom
+ * properties (inline style can't target a pseudo-element directly). */
+.bot-face::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: linear-gradient(
+    75deg,
+    transparent 42%,
+    rgba(255, 255, 255, 0.55) 49%,
+    rgba(255, 255, 255, 0.15) 53%,
+    transparent 60%
+  );
+  translate: -120% 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bot-face::after {
+    animation: bot-shine var(--bot-shine-dur, 6s) ease-in-out infinite;
+    animation-delay: var(--bot-shine-delay, 0s);
+  }
+}
+
+@keyframes bot-shine {
+  0%, 62% { translate: -120% 0; }
+  82%, 100% { translate: 120% 0; }
+}
+
+.bot-eye {
+  position: relative;
+  width: calc(var(--bot-size) * 0.12);
+  height: calc(var(--bot-size) * 0.3);
+  border-radius: 999px;
+  background: #f4f6fb;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bot-face[data-mood="idle"] .bot-eye {
+    animation-name: bot-blink;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    animation-duration: 5.5s; /* inline style overrides this per instance */
+    transition: translate 0.25s ease; /* eases bot-eye-look back to center on hover-out */
+  }
+}
+
+/* Hover: eyes glance side to side in sync with the head-turn above — same
+ * "both listed animations share the inline per-instance duration" trick as
+ * bot-look. Scoped to idle mood only: the other moods already redefine the
+ * eye's shape (arc/dot/slit) and don't have a neutral "center" to glance
+ * from. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .bot-face[data-mood="idle"]:hover .bot-eye {
+    animation-name: bot-blink, bot-eye-look;
+  }
+}
+
+@keyframes bot-eye-look {
+  0%, 100% { translate: 0 0; }
+  25% { translate: calc(var(--bot-size) * -0.09) 0; }
+  50% { translate: 0 0; }
+  75% { translate: calc(var(--bot-size) * 0.09) 0; }
+}
+
+@keyframes bot-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.08); }
+}
+
+/* watching: user is typing — eyes open a little wider, no blink */
+.bot-face[data-mood="watching"] .bot-eye {
+  height: calc(var(--bot-size) * 0.34);
+  animation: none;
+  transform: none;
+}
+
+/* thinking/analysing: a run is in flight — round, gently pulsing eyes */
+.bot-face[data-mood="thinking"] .bot-eye,
+.bot-face[data-mood="analysing"] .bot-eye {
+  width: calc(var(--bot-size) * 0.22);
+  height: calc(var(--bot-size) * 0.22);
+  border-radius: 50%;
+  animation: bot-pulse 0.9s ease-in-out infinite alternate;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bot-face[data-mood="thinking"] .bot-eye,
+  .bot-face[data-mood="analysing"] .bot-eye {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+@keyframes bot-pulse {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+/* done: closed, upward-curved happy eyes */
+.bot-face[data-mood="done"] .bot-eye {
+  width: calc(var(--bot-size) * 0.2);
+  height: calc(var(--bot-size) * 0.11);
+  background: none;
+  border-top: calc(var(--bot-size) * 0.05) solid #f4f6fb;
+  border-radius: 50% / 100% 100% 0 0;
+  animation: none;
+  transform: none;
+}
+
+/* error: low slits, tilted into a slightly worried brow */
+.bot-face[data-mood="error"] .bot-eye {
+  width: calc(var(--bot-size) * 0.22);
+  height: calc(var(--bot-size) * 0.065);
+  border-radius: 999px;
+  animation: none;
+}
+.bot-face[data-mood="error"] .bot-eye:first-child { transform: rotate(-14deg) translateY(12%); }
+.bot-face[data-mood="error"] .bot-eye:last-child { transform: rotate(14deg) translateY(12%); }
+.bot-face[data-mood="error"] { filter: saturate(0.65); }
+
+/* The nav-icon button's own fill/active-state background is meant for a
+ * literal glyph icon; a bot-face supplies its own color via its gradient,
+ * so the button becomes a transparent hit-area around it instead. Equal
+ * selector specificity to .nav-icon.active elsewhere in this file makes
+ * source order the tiebreaker — !important here is deliberate so this
+ * doesn't silently depend on staying below every future .nav-icon.active
+ * rule anyone adds later (see the position:relative incident above). */
+.nav-icon.nav-icon--bot,
+.nav-icon.nav-icon--bot.active {
+  background: transparent !important;
+}
+
+.nav-icon--bot .bot-face {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+@media (hover: hover) {
+  .nav-icon--bot:not(.active):hover .bot-face {
+    transform: scale(1.08);
+  }
+}
+
+.nav-icon--bot.active .bot-face {
+  box-shadow:
+    inset 0 calc(var(--bot-size) * -0.16) calc(var(--bot-size) * 0.22) rgba(0, 0, 0, 0.55),
+    inset 0 calc(var(--bot-size) * 0.1) calc(var(--bot-size) * 0.12) rgba(255, 255, 255, 0.3),
+    0 0 0 2px var(--bg-raised),
+    0 0 0 4px var(--icon-accent, var(--accent));
+}
+
+/* ---- Department hero: replaces the bare "Submit a goal..." empty-state
+ * for departments with no bespoke dashboard (see renderDeptHero() /
+ * renderMain() in app.js). Deliberately a new class, not a reskin of
+ * .empty-state — that class is shared by ~10 unrelated empty states
+ * elsewhere (leads, documents, memory entries, portfolio notes, ...) that
+ * must not pick up hero styling. */
+.dept-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-height: 240px;
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.dept-hero-tagline {
+  max-width: 44ch;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.dept-hero-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ---- Run-detail status face: sits beside the existing status-badge,
+ * mood driven purely by run.status (see renderRunDetail() in app.js) — no
+ * new state, works for every department's (and the CEO's) runs alike. */
+.run-header .bot-face {
+  margin-right: 2px;
 }
