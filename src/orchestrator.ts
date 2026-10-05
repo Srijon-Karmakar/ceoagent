@@ -262,7 +262,12 @@ async function drainQuery(
  * a clarifying question and the user is now answering it — rather than
  * starting fresh with no memory of the earlier exchange.
  */
-export async function runCeoAgent(goal: string, onEvent: (event: RunEvent) => void, resumeSessionId?: string) {
+export async function runCeoAgent(
+  goal: string,
+  onEvent: (event: RunEvent) => void,
+  resumeSessionId?: string,
+  abortController?: AbortController,
+) {
   const stream = query({
     prompt: goal,
     options: {
@@ -283,6 +288,7 @@ export async function runCeoAgent(goal: string, onEvent: (event: RunEvent) => vo
       maxTurns: 40,
       hooks: AGENT_DELEGATION_HOOKS,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+      ...(abortController ? { abortController } : {}),
     },
   });
 
@@ -295,6 +301,7 @@ export async function runSpecialistAgent(
   goal: string,
   onEvent: (event: RunEvent) => void,
   resumeSessionId?: string,
+  abortController?: AbortController,
 ) {
   const registry = buildAgentsRegistry();
   const agent = registry[agentKey];
@@ -313,6 +320,7 @@ export async function runSpecialistAgent(
       maxTurns: 40,
       hooks: AGENT_DELEGATION_HOOKS,
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+      ...(abortController ? { abortController } : {}),
     },
   });
 

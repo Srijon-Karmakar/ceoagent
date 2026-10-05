@@ -82,6 +82,22 @@ export function isDeepSeekExhaustionError(err: unknown): boolean {
 }
 
 /**
+ * Codex (the `codex` CLI subprocess spawned by @openai/codex-sdk) never
+ * surfaces a structured error type to this app — failures arrive as a plain
+ * thrown Error (a non-zero exit from the CLI, or a `turn.failed` event's
+ * message, see codexAgent.ts). Same string-matching approach as Claude's
+ * throw-path classifier above: auth/login expiry, rate limits, and quota/
+ * billing phrasing all mean "unavailable right now," not "this request is
+ * broken," so they're worth cascading away from.
+ */
+export function isCodexExhaustionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /not logged in|run codex login|authenticat|unauthorized|401|429|rate.?limit|insufficient_quota|quota|usage limit|credit balance|billing/i.test(
+    message,
+  );
+}
+
+/**
  * Ollama is the last link in the chain and has no billing/rate-limit concept
  * of its own — any failure here (not running, model not pulled, connection
  * refused, out of memory) just means "this local instance can't serve the

@@ -28,6 +28,7 @@ import { resolveVirtualPath, saveUpload } from "./files.js";
 import { promises as fsPromises } from "node:fs";
 import { getAnalytics } from "./analytics.js";
 import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, isValidProviderChoice, type LlmProviderChoice } from "../providers/llmFallback.js";
+import { mountCodexMcpBridge } from "../providers/codexToolBridge.js";
 import { startCeoRun as runRunnerStartCeoRun, startSpecialistRun as runRunnerStartSpecialistRun, startRun } from "./runRunner.js";
 import {
   createSchedule,
@@ -133,6 +134,7 @@ import {
   pinRun,
   unpinRun,
   deleteRun,
+  cancelRun,
   subscribe,
 } from "./store.js";
 
@@ -179,6 +181,12 @@ const app = express();
 // somewhat, so a handful of files easily blew past the old 256kb default.
 app.use(express.json({ limit: "8mb" }));
 app.use(express.static(join(__dirname, "public")));
+
+// Loopback-only, bearer-token-authenticated — not a Supabase-auth'd /api
+// route. This is how the locally-spawned `codex` CLI subprocess (see
+// providers/codexAgent.ts) reaches this app's own tools (gmail/linear/crm/
+// etc.) as an MCP client; no browser ever calls it.
+mountCodexMcpBridge(app);
 
 const upload = multer({
   storage: multer.memoryStorage(), // parsed in-memory and discarded — never written to disk
@@ -391,10 +399,10 @@ app.post("/api/runs/:id/reply", (req, res) => {
   const resumeSessionId = record.sessionId;
   const agentKey = record.agentKey;
   const provider = record.provider ?? "auto";
-  startRun(record, () =>
+  startRun(record, (abortController) =>
     agentKey === "ceo"
-      ? runCeoAgentWithFallback(message, (event) => appendEvent(record.id, event), resumeSessionId, provider)
-      : runSpecialistAgentWithFallback(agentKey, message, (event) => appendEvent(record.id, event), resumeSessionId, provider),
+      ? runCeoAgentWithFallback(message, (event) => appendEvent(record.id, event), resumeSessionId, provider, abortController)
+      : runSpecialistAgentWithFallback(agentKey, message, (event) => appendEvent(record.id, event), resumeSessionId, provider, abortController),
   );
 });
 
@@ -952,6 +960,20 @@ app.post("/api/runs/:id/unpin", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
+  res.json({ ok: true });
+});
+
+app.post("/api/runs/:id/cancel", (req, res) => {
+  const record = getRun(req.params.id);
+  if (!record) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  if (record.status !== "running") {
+    res.status(409).json({ error: "this run isn't in progress" });
+    return;
+  }
+  cancelRun(record.id);
   res.json({ ok: true });
 });
 

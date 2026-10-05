@@ -96,6 +96,7 @@ interface RunTurnOpts {
   source: RunSource;
   onEvent: (event: RunEvent) => void;
   usageAcc: UsageAccumulator;
+  abortController?: AbortController;
 }
 
 async function runAgentTurn(opts: RunTurnOpts): Promise<{ text: string; responseMessages: ModelMessage[] }> {
@@ -105,6 +106,7 @@ async function runAgentTurn(opts: RunTurnOpts): Promise<{ text: string; response
     messages: opts.messages,
     tools: opts.tools,
     stopWhen: stepCountIs(opts.maxSteps),
+    abortSignal: opts.abortController?.signal,
     onStepFinish: (step) => {
       const ts = new Date().toISOString();
       for (const part of step.content) {
@@ -178,6 +180,7 @@ function buildDelegateTool(
   registry: Map<string, ToolDef>,
   onEvent: (event: RunEvent) => void,
   usageAcc: UsageAccumulator,
+  abortController?: AbortController,
 ): Tool {
   const agentKeys = Object.keys(buildAgentsRegistry());
   return aiTool({
@@ -204,6 +207,7 @@ function buildDelegateTool(
           source: subagent_type,
           onEvent,
           usageAcc,
+          abortController,
         });
         return { text: result.text || "(specialist run completed with no final text)", isError: false };
       } catch (err) {
@@ -226,6 +230,7 @@ export async function runCeoAgentFallback(
   goal: string,
   onEvent: (event: RunEvent) => void,
   resumeSessionId?: string,
+  abortController?: AbortController,
 ): Promise<FallbackRunResult> {
   const { model, modelId } = getModel(provider);
   const sessionId = resumeSessionId && parseSessionId(resumeSessionId)?.provider === provider ? resumeSessionId : makeSessionId(provider);
@@ -237,7 +242,7 @@ export async function runCeoAgentFallback(
   const baseDefs = [...memoryReadToolDefs(registry), ...n8nToolDefs(registry)];
   const tools: Record<string, Tool> = {
     ...toAiSdkTools(baseDefs),
-    delegate_to_specialist: buildDelegateTool(model, registry, wrappedOnEvent, usageAcc),
+    delegate_to_specialist: buildDelegateTool(model, registry, wrappedOnEvent, usageAcc, abortController),
   };
 
   const messages: ModelMessage[] = [...priorMessages, { role: "user", content: goal }];
@@ -253,6 +258,7 @@ export async function runCeoAgentFallback(
       source: "ceo",
       onEvent: wrappedOnEvent,
       usageAcc,
+      abortController,
     });
     saveSessionMessages(sessionId, [...messages, ...result.responseMessages]);
     const costUsd = estimateCostUsd(provider, modelId, usageAcc);
@@ -277,6 +283,7 @@ export async function runSpecialistAgentFallback(
   goal: string,
   onEvent: (event: RunEvent) => void,
   resumeSessionId?: string,
+  abortController?: AbortController,
 ): Promise<FallbackRunResult> {
   const registryEntry = buildAgentsRegistry()[agentKey];
   if (!registryEntry) throw new Error(`Unknown agent: ${agentKey}`);
@@ -303,6 +310,7 @@ export async function runSpecialistAgentFallback(
       source: agentKey,
       onEvent: wrappedOnEvent,
       usageAcc,
+      abortController,
     });
     saveSessionMessages(sessionId, [...messages, ...result.responseMessages]);
     const costUsd = estimateCostUsd(provider, modelId, usageAcc);

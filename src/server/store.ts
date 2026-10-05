@@ -37,6 +37,11 @@ export interface RunRecord {
 interface RunStore {
   runs: Map<string, RunRecord>;
   emitters: Map<string, EventEmitter>;
+  /** One AbortController per in-flight run, created alongside its emitter in
+   * createRun/reopenRun and torn down in finishRun — lets cancelRun() signal
+   * the actual provider call (Claude's subprocess, the AI SDK's fetch, the
+   * Codex CLI's subprocess) to stop early, not just hide the run in the UI. */
+  controllers: Map<string, AbortController>;
 }
 
 const stores = new Map<string, RunStore>();
@@ -49,7 +54,7 @@ function getStore(): RunStore {
   const file = dataFile();
   const existing = stores.get(file);
   if (existing) return existing;
-  const store: RunStore = { runs: new Map(), emitters: new Map() };
+  const store: RunStore = { runs: new Map(), emitters: new Map(), controllers: new Map() };
   if (existsSync(file)) {
     const raw: RunRecord[] = JSON.parse(readFileSync(file, "utf-8"));
     for (const r of raw) {
@@ -81,8 +86,32 @@ export function createRun(goal: string, agentKey: string, provider: LlmProviderC
   const store = getStore();
   store.runs.set(record.id, record);
   store.emitters.set(record.id, new EventEmitter().setMaxListeners(50));
+  store.controllers.set(record.id, new AbortController());
   persist();
   return record;
+}
+
+/** The AbortController for a run's current turn — undefined once the run has finished (see finishRun). */
+export function getRunController(id: string): AbortController | undefined {
+  return getStore().controllers.get(id);
+}
+
+/**
+ * Signals the run's AbortController so the underlying provider call (Claude's
+ * subprocess via query()'s abortController option, the AI SDK's fetch via
+ * abortSignal, the Codex CLI's subprocess via spawn's signal option) stops
+ * early. Does not itself change the record's status/events — runRunner.ts's
+ * startRun already reacts to the controller's `aborted` flag once the
+ * aborted run() promise settles, and appends the terminal "done" event from
+ * there, same as any other outcome.
+ */
+export function cancelRun(id: string): boolean {
+  const record = getStore().runs.get(id);
+  if (!record || record.status !== "running") return false;
+  const controller = getStore().controllers.get(id);
+  if (!controller) return false;
+  controller.abort();
+  return true;
 }
 
 /**
@@ -113,7 +142,7 @@ export function appendEvent(id: string, event: RunEvent) {
  * just the latest turn), and closes out any live SSE subscribers.
  */
 export function finishRun(id: string) {
-  const { runs, emitters } = getStore();
+  const { runs, emitters, controllers } = getStore();
   const record = runs.get(id);
   if (!record) return;
   const doneEvents = record.events.filter((e): e is Extract<RunEvent, { type: "done" }> => e.type === "done");
@@ -131,6 +160,7 @@ export function finishRun(id: string) {
   persist();
   emitters.get(id)?.emit("close", record);
   emitters.delete(id);
+  controllers.delete(id);
 }
 
 export function setLinearTasks(id: string, tasks: LinearTaskRef[]) {
@@ -155,11 +185,12 @@ export function setSessionId(id: string, sessionId: string | undefined) {
  * down, so the run can stream and be finished again normally.
  */
 export function reopenRun(id: string): boolean {
-  const { runs, emitters } = getStore();
+  const { runs, emitters, controllers } = getStore();
   const record = runs.get(id);
   if (!record) return false;
   record.status = "running";
   emitters.set(id, new EventEmitter().setMaxListeners(50));
+  controllers.set(id, new AbortController());
   persist();
   return true;
 }
@@ -200,11 +231,12 @@ export function unpinRun(id: string): boolean {
  * cost history, and cannot be undone (callers should confirm with the user
  * first). Distinct from archiveRun, which only hides a run reversibly. */
 export function deleteRun(id: string): boolean {
-  const { runs, emitters } = getStore();
+  const { runs, emitters, controllers } = getStore();
   if (!runs.has(id)) return false;
   runs.delete(id);
   emitters.get(id)?.removeAllListeners();
   emitters.delete(id);
+  controllers.delete(id);
   persist();
   return true;
 }

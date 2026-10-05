@@ -23,7 +23,7 @@ const PRICING: Record<string, ModelPricing> = {
 const FALLBACK_PRICING: ModelPricing = { inputPer1k: 0.001, outputPer1k: 0.003 };
 
 export function estimateCostUsd(
-  provider: "openai" | "deepseek" | "ollama",
+  provider: "openai" | "deepseek" | "ollama" | "codex",
   model: string,
   usage: { inputTokens?: number; outputTokens?: number },
 ): number {

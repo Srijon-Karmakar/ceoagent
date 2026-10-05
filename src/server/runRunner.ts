@@ -1,6 +1,6 @@
 import type { LinearTaskRef } from "../orchestrator.js";
 import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, type LlmProviderChoice } from "../providers/llmFallback.js";
-import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun } from "./store.js";
+import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun, getRunController } from "./store.js";
 import { getEnvValue } from "./settings.js";
 
 // Fires a POST to WEBHOOK_URL (if configured) with the finished run's result,
@@ -39,18 +39,34 @@ export function notifyWebhook(record: {
  * the HTTP layer's reply endpoint (a reopened, already-existing record being
  * resumed via the SDK's session `resume` option, which this module doesn't
  * otherwise need to know about).
+ *
+ * `run()` receives the record's AbortController so the Stop button
+ * (POST /api/runs/:id/cancel -> store.ts's cancelRun) can actually interrupt
+ * the in-flight provider call, not just hide the run. Whether an abort
+ * surfaces as a rejection (most providers) or as a clean resolution that
+ * just stopped partway (observed with at least one provider's abort
+ * handling), the controller's own `aborted` flag — not the settled outcome —
+ * is what decides whether the run's final event reads "Stopped by user.",
+ * so cancellation is labeled correctly either way.
  */
-export function startRun(record: { id: string }, run: () => Promise<{ linearTasks: LinearTaskRef[]; sessionId?: string }>) {
-  run()
+export function startRun(
+  record: { id: string },
+  run: (abortController: AbortController) => Promise<{ linearTasks: LinearTaskRef[]; sessionId?: string }>,
+) {
+  const controller = getRunController(record.id) ?? new AbortController();
+  run(controller)
     .then((result) => {
       setLinearTasks(record.id, result.linearTasks);
       setSessionId(record.id, result.sessionId);
+      if (controller.signal.aborted) {
+        appendEvent(record.id, { type: "done", status: "error", error: "Stopped by user.", costUsd: 0, ts: new Date().toISOString() });
+      }
     })
     .catch((err) => {
       appendEvent(record.id, {
         type: "done",
         status: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error: controller.signal.aborted ? "Stopped by user." : err instanceof Error ? err.message : String(err),
         costUsd: 0,
         ts: new Date().toISOString(),
       });
@@ -72,15 +88,17 @@ export function startRun(record: { id: string }, run: () => Promise<{ linearTask
  */
 export function startCeoRun(displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
   const record = createRun(displayGoal, "ceo", provider);
-  startRun(record, () => runCeoAgentWithFallback(promptText, (event) => appendEvent(record.id, event), undefined, provider));
+  startRun(record, (abortController) =>
+    runCeoAgentWithFallback(promptText, (event) => appendEvent(record.id, event), undefined, provider, abortController),
+  );
   return record;
 }
 
 /** Same as `startCeoRun`, but runs one specialist directly, bypassing the CEO. */
 export function startSpecialistRun(agentKey: string, displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
   const record = createRun(displayGoal, agentKey, provider);
-  startRun(record, () =>
-    runSpecialistAgentWithFallback(agentKey, promptText, (event) => appendEvent(record.id, event), undefined, provider),
+  startRun(record, (abortController) =>
+    runSpecialistAgentWithFallback(agentKey, promptText, (event) => appendEvent(record.id, event), undefined, provider, abortController),
   );
   return record;
 }

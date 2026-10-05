@@ -8484,6 +8484,56 @@ html[data-theme="dark"] .memory-hero-input-shell {
  * would use — more white in the highlight, more black in the shadow), plus
  * a second inset highlight near the top simulating a reflected light band.
  * The moving glint itself comes from .bot-face::after below (bot-shine). */
+/* Progress ring wrapping the run-header bot-face while a run is in
+ * progress — see progressRing()/estimateRunProgress() in app.js. Sized
+ * entirely via the inline width/height set per-instance (matching the SVG's
+ * own size), so it follows .bot-face's existing "size via inline custom
+ * property, no breakpoint override" convention below instead of inventing a
+ * new one — it reflows for free wherever .run-header already reflows. */
+.run-progress-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.run-progress-ring {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.run-progress-fill {
+  transition: stroke-dasharray 0.5s ease;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--warning) 70%, transparent));
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-progress-fill {
+    transition: none;
+  }
+}
+
+/* Percentage readout — a small solid badge pinned to the ring's edge rather
+ * than centered inside it, since the ring also has to leave room for the
+ * bot-face avatar at its center; a --bg-raised ring (box-shadow, not a
+ * border, so it doesn't eat into the badge's own padding) keeps it legible
+ * against whatever's directly behind the progress ring. */
+.run-progress-pct {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 26px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #1a1400;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 0 0 2px var(--bg-raised);
+}
+
 .bot-face {
   --bot-size: 44px;
   position: relative;

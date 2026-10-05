@@ -22,7 +22,7 @@ const state = {
   attaching: false, // true while an upload (or batch of uploads) is being parsed server-side
   attachError: null, // error message from the most recent failed upload(s), cleared on next attempt
   goalDrafts: {}, // goalDraftKey(view) -> in-progress #goal-input text, kept per-view so switching tabs (which re-renders the composer) doesn't lose what you were typing
-  selectedModel: "auto", // "auto" | "claude" | "openai" | "deepseek" | "ollama" — model-picker dropdown on the goal composer; "auto" is today's Claude->OpenAI->DeepSeek->Ollama cascade, anything else pins to that one model with no fallback
+  selectedModel: "auto", // "auto" | "claude" | "codex" | "openai" | "deepseek" | "ollama" — model-picker dropdown on the goal composer; "auto" is today's Claude->Codex->OpenAI->DeepSeek->Ollama cascade, anything else pins to that one model with no fallback
   modelPickerOpen: false, // whether the model-picker's popover menu (triggered by the cpu icon button) is currently showing
   memoryHeroError: null, // error message from a failed "Feed Me" submit (e.g. request too large), cleared on next attempt
   confirmModal: null, // { title, message, confirmLabel, danger, onConfirm } | null
@@ -221,8 +221,9 @@ const LEAD_STAGE_LABELS = {
 // as a small local literal since the frontend has no build-time import of the
 // backend's provider module. "auto" (today's cascade) is always the default.
 const MODEL_OPTIONS = [
-  { value: "auto", label: "Auto", description: "Claude → OpenAI → DeepSeek → Ollama" },
+  { value: "auto", label: "Auto", description: "Claude → Codex → OpenAI → DeepSeek → Ollama" },
   { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
   { value: "openai", label: "OpenAI" },
   { value: "deepseek", label: "DeepSeek" },
   { value: "ollama", label: "Ollama (local)" },
@@ -703,6 +704,16 @@ async function unpinRun(id) {
   await fetchJSON(`/api/runs/${id}/unpin`, { method: "POST" });
   await loadRunsForCurrentView();
   if (state.selectedRun && state.selectedRun.id === id) state.selectedRun.pinned = false;
+  render();
+}
+
+// Signals the in-flight provider call (Claude's subprocess, the AI SDK's
+// fetch, Codex's subprocess) to stop — the run's own SSE stream (if open)
+// then delivers the resulting "Stopped by user." terminal state same as any
+// other outcome, so no local status mutation happens here.
+async function cancelRun(id) {
+  await fetchJSON(`/api/runs/${id}/cancel`, { method: "POST" });
+  await loadRunsForCurrentView();
   render();
 }
 
@@ -2361,8 +2372,13 @@ function renderRunActionIcons(run) {
   const pinIcon = run.pinned
     ? `<button type="button" class="run-action-icon run-action-active" data-unpin-run="${run.id}" data-label="Unpin" aria-label="Unpin"><i data-lucide="pin-off"></i></button>`
     : `<button type="button" class="run-action-icon" data-pin-run="${run.id}" data-label="Pin" aria-label="Pin"><i data-lucide="pin"></i></button>`;
+  const stopIcon =
+    run.status === "running"
+      ? `<button type="button" class="run-action-icon" data-cancel-run="${run.id}" data-label="Stop" aria-label="Stop"><i data-lucide="square"></i></button>`
+      : "";
   return `
     <span class="run-item-actions">
+      ${stopIcon}
       ${pinIcon}
       ${archiveIcon}
       <button type="button" class="run-action-icon run-action-danger" data-delete-run="${run.id}" data-label="Delete" aria-label="Delete" ${run.status === "running" ? "disabled" : ""}><i data-lucide="trash-2"></i></button>
@@ -2501,6 +2517,44 @@ function donutRing(segments, { size = 84, strokeWidth = 10 } = {}) {
   return `<svg class="bento-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">${arcs}</svg>`;
 }
 
+// A single-arc progress ring (faint full track + a colored fill arc), same
+// stroke-dasharray math as donutRing() above but for one continuous 0..1
+// value instead of stacked segments. pct === 0 renders just the track, so a
+// just-started run doesn't show a colored arc it hasn't earned yet.
+function progressRing(pct, { size = 40, strokeWidth = 3, color = "var(--warning)" } = {}) {
+  const r = (size - strokeWidth) / 2;
+  const c = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(1, pct));
+  const dash = clamped * circumference;
+  const fillArc =
+    clamped > 0
+      ? `<circle class="run-progress-fill" cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${dash} ${circumference - dash}" transform="rotate(-90 ${c} ${c})" />`
+      : "";
+  return `
+    <svg class="run-progress-ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+      <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${strokeWidth}" />
+      ${fillArc}
+    </svg>
+  `;
+}
+
+// Agent runs have no fixed step count the UI can know ahead of time (a goal
+// might finish in one tool call or several dozen), so this is deliberately
+// NOT "% of the task done" — it's an activity-based estimate (more tool
+// calls = more of the ring filled) using diminishing returns so a
+// long-running agent doesn't look permanently "almost done" after just a
+// few calls, capped below 100% while still running and only snapping to a
+// full ring once the run has actually finished (success or error alike —
+// the ring's color, driven by the caller, is what distinguishes the two).
+function estimateRunProgress(run) {
+  if (run.status !== "running") return 1;
+  const activity = run.events.filter((e) => e.type === "tool_use" || e.type === "done").length;
+  if (activity === 0) return 0;
+  const cap = 0.92;
+  return cap * (1 - 1 / (1 + activity / 6));
+}
+
 function bentoDeptBreakdown(runsByDepartment) {
   const items = runsByDepartment.filter((d) => d.count > 0);
   if (!items.length) return '<div class="bento-detail-empty">No runs yet.</div>';
@@ -2635,16 +2689,38 @@ function renderRunDetail() {
 
   const runMood = { running: "thinking", success: "done", error: "error" }[run.status] ?? "idle";
 
+  const botSize = 26;
+  const botFace =
+    run.status === "running"
+      ? (() => {
+          const ringSize = botSize + 34;
+          const pct = estimateRunProgress(run);
+          const pctLabel = Math.round(pct * 100);
+          return `
+            <span class="run-progress-wrap" style="width:${ringSize}px;height:${ringSize}px" role="progressbar" aria-valuenow="${pctLabel}" aria-valuemin="0" aria-valuemax="100" aria-label="Run progress">
+              ${progressRing(pct, { size: ringSize, strokeWidth: 5 })}
+              <span class="run-progress-face">${botFaceMarkup(run.agentKey, { size: botSize, mood: runMood })}</span>
+              <span class="run-progress-pct">${pctLabel}%</span>
+            </span>
+          `;
+        })()
+      : botFaceMarkup(run.agentKey, { size: botSize, mood: runMood });
+
   return `
     <div class="run-detail">
       <header class="run-header">
-        ${botFaceMarkup(run.agentKey, { size: 26, mood: runMood })}
+        ${botFace}
         <span class="status-badge ${run.status}">${statusLabel(run.status)}</span>
         ${run.archived ? `<span class="status-badge archived">Archived</span>` : ""}
         ${run.pinned ? `<span class="status-badge pinned">Pinned</span>` : ""}
         <span class="run-meta">${run.costUsd != null ? `$${run.costUsd.toFixed(4)}` : ""}</span>
         ${run.status === "error" && run.summary ? `<p class="run-error-summary">${escapeHtml(run.summary)}</p>` : ""}
         <div class="run-actions">
+          ${
+            run.status === "running"
+              ? `<button type="button" class="run-action-btn" data-cancel-run="${run.id}" data-label="Stop" aria-label="Stop"><i data-lucide="square"></i></button>`
+              : ""
+          }
           ${
             run.pinned
               ? `<button type="button" class="run-action-btn run-action-active" data-unpin-run="${run.id}" data-label="Unpin" aria-label="Unpin"><i data-lucide="pin-off"></i></button>`
@@ -5627,6 +5703,12 @@ function attachHandlers() {
   // Action icons live inside .run-item (sidebar list) or .run-header
   // (detail page) — stopPropagation so clicking one doesn't also trigger
   // the parent .run-item's click-to-select handler above.
+  document.querySelectorAll("[data-cancel-run]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      cancelRun(btn.dataset.cancelRun);
+    });
+  });
   document.querySelectorAll("[data-pin-run]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();

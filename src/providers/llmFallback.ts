@@ -1,11 +1,13 @@
 import { runCeoAgent, runSpecialistAgent, type RunEvent, type RunSource } from "../orchestrator.js";
 import { runCeoAgentFallback, runSpecialistAgentFallback, isFallbackProviderConfigured, type FallbackRunResult } from "./fallbackAgent.js";
+import { runCeoAgentCodex, runSpecialistAgentCodex } from "./codexAgent.js";
 import {
   isClaudeExhaustionThrow,
   isClaudeExhaustionResult,
   isOpenAiExhaustionError,
   isDeepSeekExhaustionError,
   isOllamaExhaustionError,
+  isCodexExhaustionError,
 } from "./exhaustionClassifier.js";
 import { parseSessionId, type FallbackProviderName } from "./sessionStore.js";
 
@@ -13,9 +15,14 @@ export type ProviderName = "claude" | FallbackProviderName;
 /** "auto" = today's cascade behavior; anything else is a manual, no-fallback pin to that one provider. */
 export type LlmProviderChoice = "auto" | ProviderName;
 
-export const PROVIDER_ORDER: ProviderName[] = ["claude", "openai", "deepseek", "ollama"];
+// Codex sits right after Claude: like Claude, it's a full agentic CLI that
+// can run from local CLI login alone (no API key required), unlike the
+// openai/deepseek/ollama links below it, which are plain chat-completion
+// fallbacks that always need an explicit key/URL.
+export const PROVIDER_ORDER: ProviderName[] = ["claude", "codex", "openai", "deepseek", "ollama"];
 export const PROVIDER_LABELS: Record<ProviderName, string> = {
   claude: "Claude",
+  codex: "Codex",
   openai: "OpenAI",
   deepseek: "DeepSeek",
   ollama: "Ollama (local)",
@@ -27,13 +34,17 @@ export function isValidProviderChoice(value: string): value is LlmProviderChoice
 
 function isExhaustionError(provider: ProviderName, err: unknown): boolean {
   if (provider === "claude") return isClaudeExhaustionThrow(err);
+  if (provider === "codex") return isCodexExhaustionError(err);
   if (provider === "openai") return isOpenAiExhaustionError(err);
   if (provider === "deepseek") return isDeepSeekExhaustionError(err);
   return isOllamaExhaustionError(err);
 }
 
+// Codex, like Claude, can work from local CLI login alone — never gated on
+// an explicit key being present the way the plain chat-completion fallbacks
+// below it are (see isFallbackProviderConfigured).
 function isConfigured(provider: ProviderName): boolean {
-  return provider === "claude" || isFallbackProviderConfigured(provider);
+  return provider === "claude" || provider === "codex" || isFallbackProviderConfigured(provider);
 }
 
 interface RunWithFallbackOpts {
@@ -43,6 +54,8 @@ interface RunWithFallbackOpts {
   run: (provider: ProviderName, resumeSessionId?: string) => Promise<FallbackRunResult>;
   /** A specific provider the user picked from the model dropdown — no cascade, no fallback if it fails. Omit/undefined for today's automatic cascade. */
   forcedProvider?: ProviderName;
+  /** When the user clicks Stop mid-run, cascading to the next provider would be exactly wrong — a deliberate cancellation must surface as cancelled, not as "that provider was unavailable, trying another one." */
+  abortController?: AbortController;
 }
 
 /**
@@ -111,6 +124,7 @@ async function runWithFallback(opts: RunWithFallbackOpts): Promise<FallbackRunRe
       }
       return result;
     } catch (err) {
+      if (opts.abortController?.signal.aborted) throw err;
       const message = err instanceof Error ? err.message : String(err);
       if (!isExhaustionError(provider, err)) throw err;
       errors.push(`${PROVIDER_LABELS[provider]}: ${message}`);
@@ -125,13 +139,19 @@ export function runCeoAgentWithFallback(
   onEvent: (event: RunEvent) => void,
   resumeSessionId?: string,
   provider: LlmProviderChoice = "auto",
+  abortController?: AbortController,
 ): Promise<FallbackRunResult> {
   return runWithFallback({
     source: "ceo",
     resumeSessionId,
     onEvent,
+    abortController,
     forcedProvider: provider === "auto" ? undefined : provider,
-    run: (p, resume) => (p === "claude" ? runCeoAgent(goal, onEvent, resume) : runCeoAgentFallback(p, goal, onEvent, resume)),
+    run: (p, resume) => {
+      if (p === "claude") return runCeoAgent(goal, onEvent, resume, abortController);
+      if (p === "codex") return runCeoAgentCodex(goal, onEvent, resume, abortController);
+      return runCeoAgentFallback(p, goal, onEvent, resume, abortController);
+    },
   });
 }
 
@@ -141,15 +161,18 @@ export function runSpecialistAgentWithFallback(
   onEvent: (event: RunEvent) => void,
   resumeSessionId?: string,
   provider: LlmProviderChoice = "auto",
+  abortController?: AbortController,
 ): Promise<FallbackRunResult> {
   return runWithFallback({
     source: agentKey,
     resumeSessionId,
     onEvent,
+    abortController,
     forcedProvider: provider === "auto" ? undefined : provider,
-    run: (p, resume) =>
-      p === "claude"
-        ? runSpecialistAgent(agentKey, goal, onEvent, resume)
-        : runSpecialistAgentFallback(p, agentKey, goal, onEvent, resume),
+    run: (p, resume) => {
+      if (p === "claude") return runSpecialistAgent(agentKey, goal, onEvent, resume, abortController);
+      if (p === "codex") return runSpecialistAgentCodex(agentKey, goal, onEvent, resume, abortController);
+      return runSpecialistAgentFallback(p, agentKey, goal, onEvent, resume, abortController);
+    },
   });
 }
