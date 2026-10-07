@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir, runWithTenant } from "./paths.js";
 import { listTenantContexts } from "./server/auth.js";
@@ -43,8 +44,8 @@ function getStore(): Map<string, ScheduleRecord> {
   const existing = stores.get(file);
   if (existing) return existing;
   const schedules = new Map<string, ScheduleRecord>();
-  if (existsSync(file)) {
-    const raw: ScheduleRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: ScheduleRecord[] = readDoc(file)!;
     for (const s of raw) schedules.set(s.id, s);
   }
   stores.set(file, schedules);
@@ -54,7 +55,7 @@ function getStore(): Map<string, ScheduleRecord> {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(dataFile(), JSON.stringify([...getStore().values()], null, 2));
+  writeDoc(dataFile(), [...getStore().values()]);
 }
 
 export interface CreateScheduleInput {
@@ -165,13 +166,19 @@ function tick() {
     if (!isPastFireTime(schedule.time, now)) continue;
 
     const displayGoal = `[Scheduled: ${schedule.label}] ${schedule.goal}`;
-    const record =
-      schedule.agentKey === "ceo"
-        ? runStarters.startCeoRun(displayGoal, schedule.goal)
-        : runStarters.startSpecialistRun(schedule.agentKey, displayGoal, schedule.goal);
+    let record: { id: string } | undefined;
+    try {
+      record =
+        schedule.agentKey === "ceo"
+          ? runStarters.startCeoRun(displayGoal, schedule.goal)
+          : runStarters.startSpecialistRun(schedule.agentKey, displayGoal, schedule.goal);
+    } catch (err) {
+      // e.g. the daily run/spend guardrail — skip today rather than retrying every tick.
+      console.error(`[scheduler] skipped "${schedule.label}":`, err instanceof Error ? err.message : err);
+    }
 
     schedule.lastFiredDate = todayStr;
-    schedule.lastRunId = record.id;
+    if (record) schedule.lastRunId = record.id;
     if (schedule.recurrence.type === "once") schedule.enabled = false;
     persist();
   }

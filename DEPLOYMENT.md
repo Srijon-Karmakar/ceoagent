@@ -187,6 +187,39 @@ Generate a strong automation key:
 openssl rand -hex 32
 ```
 
+### Database, limits and proxy settings
+
+```ini
+# Postgres storage (recommended for the VPS). Supabase: Project Settings ->
+# Database -> Connection string (use the Session pooler URI). The table is
+# created automatically on first start, and existing JSON files under
+# data/ and orgs/ are imported the first time each one is read.
+DATABASE_URL=postgresql://postgres.xxxx:PASSWORD@aws-0-region.pooler.supabase.com:5432/postgres
+# DATABASE_SSL=false   # only for a local Postgres without TLS
+
+# Behind Nginx — required so rate limits see real client IPs.
+TRUST_PROXY=1
+
+# Guardrails (per organization, per UTC day; 0 = no limit)
+MAX_RUNS_PER_DAY=200
+MAX_COST_USD_PER_DAY=20
+MAX_OUTBOUND_ACTIONS_PER_DAY=100
+# OUTBOUND_ACTIONS_ENABLED=false   # kill switch: block every send/post/DM
+
+# Optional rate-limit overrides (per IP, per minute)
+# RATE_LIMIT_API_PER_MIN=600
+# RATE_LIMIT_RUNS_PER_MIN=20
+```
+
+Run only one server process per database: documents are cached in memory,
+so two instances would overwrite each other's changes. Uploaded files and
+generated documents (`workspace/`, `deliverables/`) still live on disk and
+need the backups described below.
+
+Today's usage against these limits is at `GET /api/guardrails`. Every
+outbound action (allowed, blocked or failed) is recorded at `GET /api/audit-log`.
+`GET /healthz` returns `{ "ok": true }` for uptime checks.
+
 ## 6. Test The App Manually
 
 Run the compiled server once:

@@ -1,6 +1,7 @@
 import { tool as aiTool, type Tool } from "ai";
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { OUTBOUND_TOOLS, appendAudit, checkOutbound } from "../guardrails.js";
 
 /**
  * The MCP-standard content-block shape every src/tools/*.ts handler already
@@ -44,7 +45,29 @@ export function defineTool<Shape extends z.ZodRawShape>(
   shape: Shape,
   handler: (args: z.infer<z.ZodObject<Shape>>, extra: unknown) => Promise<McpToolResult>,
 ): ToolDef {
-  return { name, description, shape, handler: handler as ToolDef["handler"] };
+  return { name, description, shape, handler: withGuardrails(name, handler as ToolDef["handler"]) };
+}
+
+/**
+ * Every tool — on both the Claude and fallback-provider paths — is built by
+ * defineTool(), so this is the one place outbound actions (sends, posts,
+ * DMs) can be capped and audited regardless of which agent or provider
+ * called them. Non-outbound tools pass through untouched.
+ */
+function withGuardrails(name: string, handler: ToolDef["handler"]): ToolDef["handler"] {
+  if (!OUTBOUND_TOOLS.has(name)) return handler;
+  return async (args, extra) => {
+    const verdict = checkOutbound(name, args);
+    if (!verdict.ok) return { content: [{ type: "text", text: verdict.message }], isError: true };
+    try {
+      const result = await handler(args, extra);
+      appendAudit({ tool: name, outcome: result.isError ? "failed" : "allowed", args });
+      return result;
+    } catch (err) {
+      appendAudit({ tool: name, outcome: "failed", reason: err instanceof Error ? err.message : String(err), args });
+      throw err;
+    }
+  };
 }
 
 export function mcpResultText(result: McpToolResult): string {

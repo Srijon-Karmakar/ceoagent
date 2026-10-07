@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { randomBytes, createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir, getTenantContext } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
@@ -45,12 +46,12 @@ function getConfig() {
 }
 
 export function isCanvaConnected(): boolean {
-  return existsSync(tokenFile());
+  return docExists(tokenFile());
 }
 
 export function disconnectCanva() {
   const file = tokenFile();
-  if (existsSync(file)) unlinkSync(file);
+  if (docExists(file)) deleteDoc(file);
 }
 
 // The PKCE code_verifier only needs to survive the few seconds between
@@ -108,7 +109,7 @@ async function exchangeToken(body: URLSearchParams): Promise<CanvaConnection> {
     expiresAt: Date.now() + (json.expires_in ?? 14400) * 1000,
   };
   ensureDir();
-  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
+  writeDoc(tokenFile(), connection);
   return connection;
 }
 
@@ -132,7 +133,7 @@ export async function handleCanvaCallback(code: string): Promise<void> {
 // constantly on a stale token.
 async function getAccessToken(): Promise<string> {
   if (!isCanvaConnected()) throw new Error("Canva is not connected");
-  const connection: CanvaConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
+  const connection: CanvaConnection = readDoc(tokenFile())!;
   if (Date.now() < connection.expiresAt - 30_000) return connection.accessToken;
   try {
     const refreshed = await exchangeToken(

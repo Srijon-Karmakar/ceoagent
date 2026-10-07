@@ -9,4 +9,5 @@ Downloaded once and committed so the packaged desktop app works fully offline. P
 | DOMPurify | 3.4.14 | https://cdn.jsdelivr.net/npm/dompurify@3.4.14/dist/purify.min.js |
 | GSAP | 3.15.0 | https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js |
 | Lenis | 1.3.26 | https://cdn.jsdelivr.net/npm/lenis@1.3.26/dist/lenis.min.js |
+| three.js (module + core, for the preview Home's LaserFlow effect) | 0.186.1 | `npm install three` then `node_modules/three/build/three.module.js` + `three.core.js` |
 | Onest font (latin + latin-ext, weights 400/500/600/700/800) | v9 | https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800 |

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir } from "./paths.js";
 
@@ -48,8 +49,8 @@ function getStore(): Map<string, PlaybookItem> {
   const existing = stores.get(file);
   if (existing) return existing;
   const items = new Map<string, PlaybookItem>();
-  if (existsSync(file)) {
-    const raw: PlaybookItem[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: PlaybookItem[] = readDoc(file)!;
     for (const i of raw) items.set(i.id, i);
   }
   stores.set(file, items);
@@ -59,7 +60,7 @@ function getStore(): Map<string, PlaybookItem> {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(dataFile(), JSON.stringify([...getStore().values()], null, 2));
+  writeDoc(dataFile(), [...getStore().values()]);
 }
 
 export interface CreatePlaybookItemInput {

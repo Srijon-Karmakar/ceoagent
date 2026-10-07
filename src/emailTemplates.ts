@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir } from "./paths.js";
 
@@ -25,8 +26,8 @@ function getStore(): Map<string, EmailTemplateRecord> {
   const existing = stores.get(file);
   if (existing) return existing;
   const templates = new Map<string, EmailTemplateRecord>();
-  if (existsSync(file)) {
-    const raw: EmailTemplateRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: EmailTemplateRecord[] = readDoc(file)!;
     for (const t of raw) templates.set(t.id, t);
   }
   stores.set(file, templates);
@@ -36,7 +37,7 @@ function getStore(): Map<string, EmailTemplateRecord> {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(dataFile(), JSON.stringify([...getStore().values()], null, 2));
+  writeDoc(dataFile(), [...getStore().values()]);
 }
 
 export interface CreateEmailTemplateInput {

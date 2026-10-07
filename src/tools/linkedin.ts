@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
@@ -41,12 +42,12 @@ function getConfig() {
 }
 
 export function isLinkedinConnected(): boolean {
-  return existsSync(tokenFile());
+  return docExists(tokenFile());
 }
 
 export function disconnectLinkedin() {
   const file = tokenFile();
-  if (existsSync(file)) unlinkSync(file);
+  if (docExists(file)) deleteDoc(file);
 }
 
 export function getLinkedinAuthUrl(state?: string): string {
@@ -120,12 +121,12 @@ export async function handleLinkedinCallback(code: string): Promise<void> {
     expiresAt: Date.now() + (tokenJson.expires_in ?? 3600) * 1000,
   };
   ensureDir();
-  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
+  writeDoc(tokenFile(), connection);
 }
 
 function getConnection(): LinkedinConnection {
   if (!isLinkedinConnected()) throw new Error("LinkedIn is not connected");
-  const connection: LinkedinConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
+  const connection: LinkedinConnection = readDoc(tokenFile())!;
   // LinkedIn's standard OAuth tokens are short-lived (~60 days) with no
   // refresh token in this flow — once expired, reconnecting via the
   // Accounts page is the only way back in, same as a stale Instagram token.

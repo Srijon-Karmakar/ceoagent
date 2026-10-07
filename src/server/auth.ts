@@ -1,6 +1,7 @@
 import express from "express";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getGlobalDataDir, runWithTenant, type TenantContext } from "../paths.js";
 
@@ -107,9 +108,9 @@ export function getPublicAuthConfig() {
 }
 
 function readTenants(): TenantsFile {
-  if (!existsSync(TENANTS_FILE)) return { users: {} };
+  if (!docExists(TENANTS_FILE)) return { users: {} };
   try {
-    return JSON.parse(readFileSync(TENANTS_FILE, "utf-8"));
+    return readDoc(TENANTS_FILE)!;
   } catch {
     return { users: {} };
   }
@@ -118,7 +119,7 @@ function readTenants(): TenantsFile {
 function writeTenants(data: TenantsFile) {
   const dir = getGlobalDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(TENANTS_FILE, JSON.stringify(data, null, 2));
+  writeDoc(TENANTS_FILE, data);
 }
 
 function readCookie(req: express.Request, name: string): string | undefined {
@@ -262,13 +263,20 @@ export function restoreTenant(req: express.Request, res: express.Response, next:
   }
 }
 
+/** Constant-time string compare, so the API key can't be guessed byte-by-byte from response timing. */
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
 export function requireAutomationTenant(req: express.Request, res: express.Response, next: express.NextFunction) {
   const configuredKey = process.env.AUTOMATION_API_KEY;
   if (!configuredKey) {
     res.status(503).json({ error: "AUTOMATION_API_KEY is not configured on this server" });
     return;
   }
-  if (req.header("X-API-Key") !== configuredKey) {
+  if (!safeEqual(req.header("X-API-Key") ?? "", configuredKey)) {
     res.status(401).json({ error: "invalid or missing X-API-Key header" });
     return;
   }

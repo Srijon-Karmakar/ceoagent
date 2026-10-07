@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir } from "./paths.js";
 
@@ -38,8 +39,8 @@ function getMemoryStore(): Map<string, MemoryEntry> {
   const existing = memoryStores.get(file);
   if (existing) return existing;
   const entries = new Map<string, MemoryEntry>();
-  if (existsSync(file)) {
-    const raw: MemoryEntry[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: MemoryEntry[] = readDoc(file)!;
     for (const e of raw) entries.set(e.id, e);
   }
   memoryStores.set(file, entries);
@@ -49,7 +50,7 @@ function getMemoryStore(): Map<string, MemoryEntry> {
 function persistMemory() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(memoryFile(), JSON.stringify([...getMemoryStore().values()], null, 2));
+  writeDoc(memoryFile(), [...getMemoryStore().values()]);
 }
 
 export interface CreateMemoryEntryInput {

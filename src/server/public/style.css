@@ -6448,16 +6448,52 @@ body {
 }
 
 body::before {
-  content: "";
+  content: none;
+}
+
+.aura-flow-overlay {
+  display: none;
   position: fixed;
+  inset: -7vh -5vw;
   z-index: 0;
   pointer-events: none;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: clamp(700px, 65vw, 1200px);
-  aspect-ratio: 1486 / 800;
-  background: url("/asset/pipe.svg") no-repeat center / contain;
+  overflow: hidden;
+  opacity: 0.68;
+  filter: saturate(1.18);
+  background:
+    radial-gradient(circle at 64% 46%, color-mix(in srgb, var(--aura-color, var(--accent)) 22%, transparent), transparent 34%),
+    radial-gradient(circle at 37% 58%, color-mix(in srgb, var(--aura-color, var(--accent)) 13%, transparent), transparent 28%);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, black 7%, black 93%, transparent),
+    linear-gradient(to bottom, transparent, black 4%, black 92%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, black 7%, black 93%, transparent),
+    linear-gradient(to bottom, transparent, black 4%, black 92%, transparent);
+  mask-composite: intersect;
+}
+
+.aura-flow-overlay canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+html[data-theme="dark"] .aura-flow-overlay {
+  opacity: 0.82;
+  filter: saturate(1.28) brightness(1.04);
+}
+
+@media (max-width: 719.98px) {
+  .aura-flow-overlay {
+    inset: -9vh -38vw;
+    opacity: 0.48;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aura-flow-overlay {
+    display: none !important;
+  }
 }
 
 /* .icon-rail and .sidebar are deliberately excluded here — both set their

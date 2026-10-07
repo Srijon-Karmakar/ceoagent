@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
@@ -44,12 +45,12 @@ function getConfig() {
 }
 
 export function isInstagramConnected(): boolean {
-  return existsSync(tokenFile());
+  return docExists(tokenFile());
 }
 
 export function disconnectInstagram() {
   const file = tokenFile();
-  if (existsSync(file)) unlinkSync(file);
+  if (docExists(file)) deleteDoc(file);
 }
 
 export function getInstagramAuthUrl(state?: string): string {
@@ -147,12 +148,12 @@ export async function handleInstagramCallback(code: string): Promise<void> {
 
   const connection: InstagramConnection = { userId: String(shortLived.user_id), accessToken, username, expiresAt };
   ensureDir();
-  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
+  writeDoc(tokenFile(), connection);
 }
 
 function getConnection(): InstagramConnection {
   if (!isInstagramConnected()) throw new Error("Instagram is not connected");
-  const connection: InstagramConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
+  const connection: InstagramConnection = readDoc(tokenFile())!;
   if (Date.now() > connection.expiresAt) {
     throw new Error("Instagram connection expired — reconnect it from the Accounts page.");
   }

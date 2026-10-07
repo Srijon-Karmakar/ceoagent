@@ -3,6 +3,7 @@ import { z } from "zod";
 import nodemailer, { type Transporter } from "nodemailer";
 import { getEnvValue } from "../server/settings.js";
 import { defineTool } from "../providers/toolAdapter.js";
+import { recordSentEmail } from "../sentEmails.js";
 import {
   createEmailTemplate,
   listEmailTemplates,
@@ -51,6 +52,12 @@ function getFromAddress(): string {
 }
 
 export async function sendSesEmail(to: string, subject: string, body: string, isHtml = false): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const result = await sendSesEmailRaw(to, subject, body, isHtml);
+  recordSentEmail({ channel: "ses", to, subject, body, isHtml, result });
+  return result;
+}
+
+async function sendSesEmailRaw(to: string, subject: string, body: string, isHtml = false): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   try {
     const transporter = getTransporter();
     const info = await transporter.sendMail({

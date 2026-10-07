@@ -2,11 +2,13 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { google } from "googleapis";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
 import { defineTool } from "../providers/toolAdapter.js";
 import { resolveVirtualPath } from "../server/files.js";
+import { recordSentEmail } from "../sentEmails.js";
 import {
   createEmailTemplate,
   listEmailTemplates,
@@ -43,12 +45,12 @@ function getOAuthClient() {
 }
 
 export function isGmailConnected(): boolean {
-  return existsSync(tokenFile());
+  return docExists(tokenFile());
 }
 
 export function disconnectGmail() {
   const file = tokenFile();
-  if (existsSync(file)) unlinkSync(file);
+  if (docExists(file)) deleteDoc(file);
 }
 
 export function getGmailAuthUrl(state?: string): string {
@@ -65,18 +67,18 @@ export async function handleGmailCallback(code: string): Promise<void> {
   const client = getOAuthClient();
   const { tokens } = await client.getToken(code);
   ensureDir();
-  writeFileSync(tokenFile(), JSON.stringify(tokens, null, 2));
+  writeDoc(tokenFile(), tokens);
 }
 
 function getAuthedClient() {
   if (!isGmailConnected()) throw new Error("Gmail is not connected");
   const client = getOAuthClient();
   const file = tokenFile();
-  const tokens = JSON.parse(readFileSync(file, "utf-8"));
+  const tokens = readDoc(file)!;
   client.setCredentials(tokens);
   client.on("tokens", (newTokens) => {
     // Persist refreshed access tokens so we don't re-prompt for consent.
-    writeFileSync(file, JSON.stringify({ ...tokens, ...newTokens }, null, 2));
+    writeDoc(file, { ...tokens, ...newTokens });
   });
   return google.gmail({ version: "v1", auth: client });
 }
@@ -111,6 +113,12 @@ function buildRawMessage(to: string, subject: string, body: string, isHtml = fal
 }
 
 export async function sendGmailEmail(to: string, subject: string, body: string, isHtml = false): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const result = await sendGmailEmailRaw(to, subject, body, isHtml);
+  recordSentEmail({ channel: "gmail", to, subject, body, isHtml, result });
+  return result;
+}
+
+async function sendGmailEmailRaw(to: string, subject: string, body: string, isHtml = false): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   try {
     const gmail = getAuthedClient();
     const raw = buildRawMessage(to, subject, body, isHtml);

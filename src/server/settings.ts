@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir, getTenantContext } from "../paths.js";
 
@@ -70,15 +71,19 @@ const FIELDS: FieldMeta[] = [
   { envVar: "AUTOMATION_API_KEY", label: "Automation API key", group: "Automation" },
   { envVar: "WEBHOOK_URL", label: "Webhook URL", group: "Automation" },
   { envVar: "N8N_WORKFLOWS", label: "n8n workflows (JSON)", group: "Automation" },
+  { envVar: "ANALYTICS_SOURCE_URL", label: "Project URL (e.g. https://xxxx.supabase.co)", group: "Analytics Source" },
+  { envVar: "ANALYTICS_SOURCE_SERVICE_KEY", label: "Service role key (Project Settings → API — keep secret)", group: "Analytics Source" },
+  { envVar: "ANALYTICS_SOURCE_TABLE", label: "Events table name (default: analytics_events)", group: "Analytics Source" },
+  { envVar: "ANALYTICS_SOURCE_LABEL", label: "Project name (shown on the dashboard button)", group: "Analytics Source" },
 ];
 
 type SettingsFile = Record<string, string>;
 
 function readSettingsFile(): SettingsFile {
   const SETTINGS_FILE = settingsFile();
-  if (!existsSync(SETTINGS_FILE)) return {};
+  if (!docExists(SETTINGS_FILE)) return {};
   try {
-    return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
+    return readDoc(SETTINGS_FILE)!;
   } catch {
     return {};
   }
@@ -87,7 +92,7 @@ function readSettingsFile(): SettingsFile {
 function writeSettingsFile(data: SettingsFile) {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(settingsFile(), JSON.stringify(data, null, 2));
+  writeDoc(settingsFile(), data);
 }
 
 /**

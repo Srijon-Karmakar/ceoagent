@@ -39,6 +39,11 @@ export function getBaseDir(): string {
   return tenant ? join(BASE_DIR, "orgs", safeSegment(tenant.organizationId)) : BASE_DIR;
 }
 
+/** The tenant-independent root everything else lives under — storage.ts keys documents relative to it. */
+export function getRootDir(): string {
+  return BASE_DIR;
+}
+
 export function getGlobalDataDir(): string {
   return join(BASE_DIR, "data");
 }

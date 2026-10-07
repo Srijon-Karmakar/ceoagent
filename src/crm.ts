@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir } from "./paths.js";
 
@@ -53,8 +54,8 @@ function getStore(): Map<string, LeadRecord> {
   if (existing) return existing;
   const leads = new Map<string, LeadRecord>();
   let migrated = false;
-  if (existsSync(file)) {
-    const raw: LeadRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: LeadRecord[] = readDoc(file)!;
     for (const l of raw) {
       if (!l.stageEnteredAt) {
         l.stageEnteredAt = l.updatedAt ?? l.createdAt;
@@ -71,7 +72,7 @@ function getStore(): Map<string, LeadRecord> {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(dataFile(), JSON.stringify([...getStore().values()], null, 2));
+  writeDoc(dataFile(), [...getStore().values()]);
 }
 
 export interface CreateLeadInput {

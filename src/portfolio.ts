@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "./storage.js";
 import { join } from "node:path";
 import { getDataDir } from "./paths.js";
 
@@ -88,8 +89,8 @@ function getProjectStore(): Map<string, PortfolioProject> {
   const existing = projectStores.get(file);
   if (existing) return existing;
   const projects = new Map<string, PortfolioProject>();
-  if (existsSync(file)) {
-    const raw: PortfolioProject[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: PortfolioProject[] = readDoc(file)!;
     for (const p of raw) projects.set(p.id, p);
   }
   projectStores.set(file, projects);
@@ -99,7 +100,7 @@ function getProjectStore(): Map<string, PortfolioProject> {
 function persistProjects() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(projectsFile(), JSON.stringify([...getProjectStore().values()], null, 2));
+  writeDoc(projectsFile(), [...getProjectStore().values()]);
 }
 
 function getEntryStore(): Map<string, PortfolioEntry> {
@@ -107,8 +108,8 @@ function getEntryStore(): Map<string, PortfolioEntry> {
   const existing = entryStores.get(file);
   if (existing) return existing;
   const entries = new Map<string, PortfolioEntry>();
-  if (existsSync(file)) {
-    const raw: PortfolioEntry[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: PortfolioEntry[] = readDoc(file)!;
     for (const e of raw) entries.set(e.id, e);
   }
   entryStores.set(file, entries);
@@ -118,7 +119,7 @@ function getEntryStore(): Map<string, PortfolioEntry> {
 function persistEntries() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(entriesFile(), JSON.stringify([...getEntryStore().values()], null, 2));
+  writeDoc(entriesFile(), [...getEntryStore().values()]);
 }
 
 function getNoteStore(): Map<string, PortfolioNote> {
@@ -126,8 +127,8 @@ function getNoteStore(): Map<string, PortfolioNote> {
   const existing = noteStores.get(file);
   if (existing) return existing;
   const notes = new Map<string, PortfolioNote>();
-  if (existsSync(file)) {
-    const raw: PortfolioNote[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: PortfolioNote[] = readDoc(file)!;
     for (const n of raw) notes.set(n.id, n);
   }
   noteStores.set(file, notes);
@@ -137,7 +138,7 @@ function getNoteStore(): Map<string, PortfolioNote> {
 function persistNotes() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(notesFile(), JSON.stringify([...getNoteStore().values()], null, 2));
+  writeDoc(notesFile(), [...getNoteStore().values()]);
 }
 
 export function createProject(name: string): PortfolioProject {

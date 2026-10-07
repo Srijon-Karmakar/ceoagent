@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 import multer from "multer";
 import ExcelJS from "exceljs";
 import { config as loadDotenv } from "dotenv";
@@ -27,9 +29,13 @@ import { parseAttachment } from "../tools/attachments.js";
 import { resolveVirtualPath, saveUpload } from "./files.js";
 import { promises as fsPromises } from "node:fs";
 import { getAnalytics } from "./analytics.js";
+import { listSentEmails, type SentEmailQuery } from "../sentEmails.js";
+import { getExternalAnalytics, getExternalAnalyticsDashboard, isExternalAnalyticsConfigured } from "./externalAnalytics.js";
 import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, isValidProviderChoice, type LlmProviderChoice } from "../providers/llmFallback.js";
 import { mountCodexMcpBridge } from "../providers/codexToolBridge.js";
-import { startCeoRun as runRunnerStartCeoRun, startSpecialistRun as runRunnerStartSpecialistRun, startRun } from "./runRunner.js";
+import { LimitExceededError, readAuditLog, getDailyUsage, limits as guardrailLimits } from "../guardrails.js";
+import { initStorage, closeStorage } from "../storage.js";
+import { enforceRunLimits, startCeoRun as runRunnerStartCeoRun, startSpecialistRun as runRunnerStartSpecialistRun, startRun } from "./runRunner.js";
 import {
   createSchedule,
   listSchedules,
@@ -160,7 +166,8 @@ function monitorElectronParent() {
     try {
       process.kill(parentPid, 0);
     } catch {
-      process.exit(0);
+      clearInterval(timer);
+      closeStorage().finally(() => process.exit(0));
     }
   }, 5000);
   timer.unref();
@@ -176,10 +183,42 @@ function defaultPort(): number {
 }
 
 const app = express();
+// Behind Nginx (see DEPLOYMENT.md) the client IP arrives in X-Forwarded-For;
+// without this every request looks like it came from 127.0.0.1 and the rate
+// limiters below would throttle all users as one. Set TRUST_PROXY=1 (number
+// of proxy hops) when running behind a reverse proxy.
+if (process.env.TRUST_PROXY) app.set("trust proxy", Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+app.disable("x-powered-by");
+// Standard security headers. CSP is left off for now: the UI relies on
+// inline scripts/styles and CDN assets, and a wrong policy silently breaks
+// pages — tighten this once the UI's asset origins are pinned down.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+
+// Rate limits, per client IP. Generous for normal UI use (polling, streams),
+// tight where a request costs money (agent runs) or guards login.
+const limitHandler = (_req: express.Request, res: express.Response) => {
+  res.status(429).json({ error: "Too many requests — please slow down and try again shortly." });
+};
+const apiLimiter = rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_API_PER_MIN) || 600, standardHeaders: "draft-7", legacyHeaders: false, handler: limitHandler });
+const runLimiter = rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_RUNS_PER_MIN) || 20, standardHeaders: "draft-7", legacyHeaders: false, handler: limitHandler });
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 50, standardHeaders: "draft-7", legacyHeaders: false, handler: limitHandler });
+app.use(["/api", "/webhook", "/auth"], apiLimiter);
+app.use("/api/auth/session", authLimiter);
+app.post(["/api/runs", "/api/agents/:key/runs", "/api/automation/runs", "/api/automation/agents/:key/runs", "/api/runs/:id/reply"], runLimiter);
 // Generous headroom for bulk attachments: each parsed file caps at 50,000
 // chars (see attachments.ts's MAX_CHARS) and JSON-escaping can inflate that
 // somewhat, so a handful of files easily blew past the old 256kb default.
 app.use(express.json({ limit: "8mb" }));
+// The preview dashboard (/preview) is actively being iterated on in place —
+// files change under the same URL from one minute to the next, and the
+// browser treating that as cacheable has already caused a "my changes
+// aren't showing up" confusion once. Disable caching for just that
+// subtree; every other static asset keeps express.static's normal
+// (conditional-GET-friendly) behavior.
+app.use("/preview", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use(express.static(join(__dirname, "public")));
 
 // Loopback-only, bearer-token-authenticated — not a Supabase-auth'd /api
@@ -392,6 +431,7 @@ app.post("/api/runs/:id/reply", (req, res) => {
     return;
   }
 
+  enforceRunLimits();
   reopenRun(record.id);
   appendEvent(record.id, { type: "text", source: "user", text: message, ts: new Date().toISOString() });
   res.status(202).json({ id: record.id });
@@ -406,12 +446,56 @@ app.post("/api/runs/:id/reply", (req, res) => {
   );
 });
 
+function parseSentEmailQuery(q: express.Request["query"]): SentEmailQuery {
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const channel = str(q.channel);
+  const status = str(q.status);
+  const limit = Number(q.limit);
+  return {
+    since: str(q.since),
+    channel: channel === "gmail" || channel === "ses" ? channel : undefined,
+    status: status === "sent" || status === "failed" ? status : undefined,
+    limit: Number.isFinite(limit) ? limit : undefined,
+  };
+}
+
+// Log of every email this app sent (Gmail + SES), newest first.
+// Query: ?since=<ISO date>&channel=gmail|ses&status=sent|failed&limit=1..1000
+// /api/sent-emails is for this app's own UI (session auth);
+// /api/automation/sent-emails is for external systems (X-API-Key + X-Organization-Id).
+app.get("/api/sent-emails", (req, res) => {
+  res.json({ emails: listSentEmails(parseSentEmailQuery(req.query)) });
+});
+
+app.get("/api/automation/sent-emails", (req, res) => {
+  res.json({ emails: listSentEmails(parseSentEmailQuery(req.query)) });
+});
+
+// --- Guardrails: today's usage against the configured caps, and the outbound-action audit trail ---
+
+app.get("/api/guardrails", (_req, res) => {
+  res.json({ limits: guardrailLimits(), usageToday: getDailyUsage() });
+});
+
+app.get("/api/audit-log", (req, res) => {
+  res.json(readAuditLog(Number(req.query.limit) || 200));
+});
+
 app.get("/api/departments", (_req, res) => {
   res.json(DEPARTMENTS);
 });
 
 app.get("/api/analytics", (_req, res) => {
   res.json(getAnalytics());
+});
+
+app.get("/api/analytics/external", async (_req, res) => {
+  res.json(await getExternalAnalytics());
+});
+
+app.get("/api/analytics/external/dashboard", async (req, res) => {
+  const range = typeof req.query.range === "string" ? req.query.range : "7d";
+  res.json(await getExternalAnalyticsDashboard(range));
 });
 
 // --- Schedules: the Calendar department's "click a date/range" automations.
@@ -1277,6 +1361,13 @@ app.get("/api/accounts", (_req, res) => {
       connected: isCanvaConnected(),
       connectUrl: oauthConnectUrl("/auth/canva"),
     },
+    {
+      key: "analytics_source",
+      label: "Analytics Source (your own product's Supabase project)",
+      connected: isExternalAnalyticsConfigured(),
+      configOnly: true,
+      configHint: "Connect any Supabase-backed project so its real-time stats (signups, logins, unique visitors) show up in the Analytics tab here. Set the project URL and a service role key (Project Settings → API in that project's Supabase dashboard — keep this secret, it's used server-side only) in the Settings screen. Reads straight from that project's analytics_events table (or another table name you set) — no changes needed on that project's side.",
+    },
   ]);
 });
 
@@ -1555,10 +1646,46 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
     res.status(400).json({ error: err.message });
     return;
   }
-  next(err);
+  if (err instanceof LimitExceededError) {
+    res.status(429).json({ error: err.message });
+    return;
+  }
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  // Log the details server-side; never leak stack traces to the client.
+  console.error("[server] unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
-export function startServer(port = defaultPort()): Promise<number> {
+app.get("/healthz", (_req, res) => {
+  res.json({ ok: true });
+});
+
+let shutdownHooked = false;
+function hookGracefulShutdown(server: import("node:http").Server) {
+  if (shutdownHooked) return;
+  shutdownHooked = true;
+  const shutdown = (signal: string) => {
+    console.log(`[server] ${signal} received, flushing storage and shutting down`);
+    server.close();
+    const force = setTimeout(() => process.exit(1), 10_000);
+    force.unref();
+    closeStorage()
+      .catch((err) => console.error("[server] storage flush failed during shutdown:", err))
+      .finally(() => process.exit(0));
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+}
+
+export async function startServer(port = defaultPort()): Promise<number> {
+  // Must run before anything reads tenant data: in database mode this loads
+  // every stored document into memory. Settings are re-applied afterwards
+  // since the first, module-load-time pass could only see files on disk.
+  await initStorage();
+  loadSettingsIntoEnv();
   return new Promise((resolve, reject) => {
     initScheduler({ startCeoRun: runRunnerStartCeoRun, startSpecialistRun: runRunnerStartSpecialistRun });
     const server = app.listen(port, () => {
@@ -1566,6 +1693,7 @@ export function startServer(port = defaultPort()): Promise<number> {
       const actualPort = typeof address === "object" && address ? address.port : port;
       process.env.PORT = String(actualPort);
       console.log(`CEO Agent OS running at http://localhost:${actualPort}`);
+      hookGracefulShutdown(server);
       resolve(actualPort);
     });
     server.once("error", reject);
@@ -1577,5 +1705,8 @@ export function startServer(port = defaultPort()): Promise<number> {
 // process imports startServer() itself to control startup order (settings
 // must load into process.env before the server binds).
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  startServer();
+  startServer().catch((err) => {
+    console.error("[server] failed to start:", err);
+    process.exit(1);
+  });
 }

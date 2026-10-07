@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import type { RunEvent, LinearTaskRef } from "../orchestrator.js";
 import type { LlmProviderChoice } from "../providers/llmFallback.js";
@@ -55,8 +56,8 @@ function getStore(): RunStore {
   const existing = stores.get(file);
   if (existing) return existing;
   const store: RunStore = { runs: new Map(), emitters: new Map(), controllers: new Map() };
-  if (existsSync(file)) {
-    const raw: RunRecord[] = JSON.parse(readFileSync(file, "utf-8"));
+  if (docExists(file)) {
+    const raw: RunRecord[] = readDoc(file)!;
     for (const r of raw) {
       if (r.status === "running") r.status = "error";
       store.runs.set(r.id, r);
@@ -69,7 +70,7 @@ function getStore(): RunStore {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(dataFile(), JSON.stringify([...getStore().runs.values()], null, 2));
+  writeDoc(dataFile(), [...getStore().runs.values()]);
 }
 
 export function createRun(goal: string, agentKey: string, provider: LlmProviderChoice = "auto"): RunRecord {
@@ -275,4 +276,13 @@ export function subscribe(
     emitter.off("event", onEvent);
     emitter.off("close", onClose);
   };
+}
+
+/** Total recorded LLM cost of this tenant's runs created since `sinceIso` — feeds the daily spend guardrail. */
+export function costSince(sinceIso: string): number {
+  let total = 0;
+  for (const r of getStore().runs.values()) {
+    if (r.createdAt >= sinceIso) total += r.costUsd ?? 0;
+  }
+  return total;
 }

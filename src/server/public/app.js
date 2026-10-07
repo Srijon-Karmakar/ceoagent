@@ -605,6 +605,73 @@ function toggleTheme() {
   document.documentElement.setAttribute("data-theme", state.theme);
   render(); // chart colors and department accents are theme-dependent — full re-render
 }
+// ---------- Background aura ----------
+
+let appAuraEl = null;
+let appAuraHandle = null;
+
+function ensureAppAuraEl() {
+  if (appAuraEl) return appAuraEl;
+  appAuraEl = document.createElement("div");
+  appAuraEl.className = "aura-flow-overlay";
+  appAuraEl.setAttribute("aria-hidden", "true");
+  document.body.insertBefore(appAuraEl, document.body.firstChild);
+  return appAuraEl;
+}
+
+function getCssAccent() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8790ff";
+}
+
+function currentAuraColor() {
+  if (state.view.type === "department") return deptColor(state.view.key) || getCssAccent();
+  if (state.view.type === "playbook") return deptColor(state.view.key) || getCssAccent();
+  if (state.view.type === "content-calendar") return deptColor("marketing") || getCssAccent();
+  if (state.view.type === "memory-browse") return deptColor("memory") || getCssAccent();
+  return getCssAccent();
+}
+
+function destroyAppAura() {
+  if (appAuraHandle) {
+    appAuraHandle.destroy();
+    appAuraHandle = null;
+  }
+}
+
+function syncAppAuraFlow() {
+  const el = ensureAppAuraEl();
+  const shouldShow = state.auth.user && state.auth.mode !== "reset" && !prefersReducedMotion();
+  if (!shouldShow) {
+    el.style.display = "none";
+    destroyAppAura();
+    return;
+  }
+
+  const color = currentAuraColor();
+  el.style.display = "block";
+  el.style.setProperty("--aura-color", color);
+
+  if (!appAuraHandle && window.LaserFlow) {
+    appAuraHandle = window.LaserFlow.mount(el, {
+      color,
+      wispDensity: 1.35,
+      horizontalBeamOffset: 0.18,
+      verticalBeamOffset: -0.08,
+      horizontalSizing: 1.05,
+      verticalSizing: 2.2,
+      flowSpeed: 0.28,
+      fogIntensity: 0.2,
+      fogScale: 0.22,
+      wispSpeed: 10.5,
+      wispIntensity: 2.8,
+      flowStrength: 0.32,
+      decay: 1.25,
+      falloffStart: 0.95,
+    });
+  } else if (appAuraHandle) {
+    appAuraHandle.setColor(color);
+  }
+}
 
 // Identifies a view for the purpose of keying state.goalDrafts — distinct
 // departments/playbooks each get their own draft slot.
@@ -1845,6 +1912,7 @@ function render() {
     app.innerHTML = renderAuthView();
     attachAuthHandlers();
     if (window.lucide) window.lucide.createIcons();
+    syncAppAuraFlow();
     return;
   }
 
@@ -1894,6 +1962,7 @@ function render() {
   if (window.lucide) window.lucide.createIcons();
   initMemoryOrb();
   initLenis();
+  syncAppAuraFlow();
 
   if (prevFocusId) {
     const el = document.getElementById(prevFocusId);
@@ -6542,6 +6611,8 @@ function initKanbanWheelScroll() {
   );
 }
 
+window.addEventListener("resize", () => syncAppAuraFlow());
+window.addEventListener("laserflow:ready", () => syncAppAuraFlow());
 // ---------- Init ----------
 
 async function init() {

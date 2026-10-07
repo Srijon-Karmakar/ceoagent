@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import { getDataDir } from "../paths.js";
@@ -42,12 +43,12 @@ let cache: SessionFile | undefined;
 function load(): SessionFile {
   if (cache) return cache;
   const file = sessionsFile();
-  if (!existsSync(file)) {
+  if (!docExists(file)) {
     cache = {};
     return cache;
   }
   try {
-    cache = JSON.parse(readFileSync(file, "utf-8"));
+    cache = readDoc(file)!;
   } catch {
     cache = {};
   }
@@ -57,7 +58,7 @@ function load(): SessionFile {
 function persist() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(sessionsFile(), JSON.stringify(load(), null, 2));
+  writeDoc(sessionsFile(), load());
 }
 
 export function getSessionMessages(sessionId: string): ModelMessage[] {
@@ -87,12 +88,12 @@ let codexThreadCache: CodexThreadFile | undefined;
 function loadCodexThreads(): CodexThreadFile {
   if (codexThreadCache) return codexThreadCache;
   const file = codexThreadsFile();
-  if (!existsSync(file)) {
+  if (!docExists(file)) {
     codexThreadCache = {};
     return codexThreadCache;
   }
   try {
-    codexThreadCache = JSON.parse(readFileSync(file, "utf-8"));
+    codexThreadCache = readDoc(file)!;
   } catch {
     codexThreadCache = {};
   }
@@ -102,7 +103,7 @@ function loadCodexThreads(): CodexThreadFile {
 function persistCodexThreads() {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(codexThreadsFile(), JSON.stringify(loadCodexThreads(), null, 2));
+  writeDoc(codexThreadsFile(), loadCodexThreads());
 }
 
 export function getCodexThreadId(sessionId: string): string | undefined {

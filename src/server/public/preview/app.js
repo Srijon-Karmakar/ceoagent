@@ -44,14 +44,17 @@ const MODEL_OPTIONS = [
   { value: "ollama", label: "Ollama (local)" },
 ];
 
+// The six cards that radiate off the home page's orbit visual. Order
+// matters — it drives both the clockwise layout (orbit-pos-1..6 in
+// style.css) and the dotted connector drawn to each card.
 const QUICK_ACTIONS = [
   {
     key: "plan",
     label: "Plan",
-    icon: "list-checks",
+    icon: "clipboard-list",
     bg: "color-mix(in srgb, var(--accent) 16%, transparent)",
     fg: "var(--accent)",
-    desc: "Turn goals into structured plans",
+    desc: "Turn ideas into clear plans",
     prompt: "Help me turn this goal into a concrete, step-by-step plan: ",
   },
   {
@@ -60,43 +63,79 @@ const QUICK_ACTIONS = [
     icon: "search",
     bg: "color-mix(in srgb, #0891b2 16%, transparent)",
     fg: "#0891b2",
-    desc: "Find insights and opportunities",
+    desc: "Get deep insights",
     prompt: "Research the following and summarize key findings: ",
-  },
-  {
-    key: "create",
-    label: "Create",
-    icon: "sparkles",
-    bg: "color-mix(in srgb, var(--warning) 20%, transparent)",
-    fg: "var(--warning)",
-    desc: "Draft content, documents and more",
-    prompt: "Draft the following for me: ",
   },
   {
     key: "execute",
     label: "Execute",
     icon: "zap",
-    bg: "color-mix(in srgb, var(--success) 18%, transparent)",
-    fg: "var(--success)",
-    desc: "Get things done with your agents",
+    bg: "color-mix(in srgb, var(--warning) 20%, transparent)",
+    fg: "var(--warning)",
+    desc: "Break it down & do it",
     prompt: "Get this done end-to-end: ",
   },
+  {
+    key: "analyze",
+    label: "Analyze",
+    icon: "bar-chart-3",
+    bg: "color-mix(in srgb, #7c4a21 16%, transparent)",
+    fg: "#7c4a21",
+    desc: "Find what works",
+    prompt: "Analyze the following and tell me what's working: ",
+  },
+  {
+    key: "improve",
+    label: "Improve",
+    icon: "trending-up",
+    bg: "color-mix(in srgb, var(--success) 18%, transparent)",
+    fg: "var(--success)",
+    desc: "Get smarter over time",
+    prompt: "Review this and suggest how to improve it: ",
+  },
+  {
+    key: "grow",
+    label: "Grow",
+    icon: "users",
+    bg: "color-mix(in srgb, #e87ba4 20%, transparent)",
+    fg: "#e87ba4",
+    desc: "Find opportunities",
+    prompt: "Find growth opportunities for: ",
+  },
+];
+
+// Shortcut chips under the composer — each just pre-fills a starting prompt.
+const SUGGESTION_CHIPS = [
+  { key: "roadmap", label: "Create a product roadmap", icon: "map", prompt: "Create a product roadmap for: " },
+  { key: "business-idea", label: "Analyze my business idea", icon: "bar-chart-3", prompt: "Analyze this business idea: " },
+  { key: "prd", label: "Write a PRD", icon: "file-text", prompt: "Write a PRD for: " },
+  { key: "marketing", label: "Plan a marketing strategy", icon: "megaphone", prompt: "Plan a marketing strategy for: " },
+];
+
+// Bottom-row "Quick Tools" grid — a mix of nav shortcuts and composer
+// pre-fills, same two patterns QUICK_ACTIONS and SUGGESTION_CHIPS already use.
+const QUICK_TOOLS = [
+  { key: "new-project", label: "New Project", icon: "folder-plus", nav: "portfolio" },
+  { key: "new-task", label: "New Task", icon: "list-plus", nav: "tasks" },
+  { key: "brainstorm", label: "Brainstorm", icon: "lightbulb", prompt: "Help me brainstorm ideas for: " },
+  { key: "summarize", label: "Summarize", icon: "file-text", prompt: "Summarize the following: " },
 ];
 
 const NOTIF_SEEN_KEY = "ceoagent_preview_notif_last_seen";
 const THEME_KEY = "theme"; // same key the main app uses, so theme choice is shared across both pages
 const POLL_MS = 10000;
 
-// Quick-action cards that map cleanly onto one real department target the
-// CEO directly (bypassing delegation) — Create/Execute stay routed through
-// the CEO (POST /api/runs) since neither maps onto a single department
-// without guessing.
-const QUICK_ACTION_TARGETS = { plan: "manager", research: "analysis" };
+// Orbit cards that map cleanly onto one real department, routed direct to
+// that department (bypassing CEO delegation). Execute/Improve stay routed
+// through the CEO (POST /api/runs) since neither maps onto a single
+// department without guessing.
+const QUICK_ACTION_TARGETS = { plan: "manager", research: "analysis", analyze: "analysis", grow: "sales" };
 
 const state = {
   theme: "light",
   view: "home",
   sidebarOpen: false,
+  sidebarCollapsed: false,
   loading: true,
   loadError: null,
   tenant: null,
@@ -105,6 +144,8 @@ const state = {
   documents: [],
   memory: [],
   analytics: null,
+  externalAnalytics: { data: null, loaded: false, loading: false, error: null },
+  externalDashboard: { expanded: false, range: "7d", metric: "visitors", data: null, loading: false, error: null, trendTableView: false },
   composerDraft: "", // kept in state (not just the textarea's own DOM value) since render() also fires on the 10s background poll, which would otherwise wipe an in-progress draft on every refresh
   composerProvider: "auto",
   composerTargetAgent: null, // set by a quick-action card; routes submitGoal to that department directly
@@ -116,7 +157,8 @@ const state = {
   searchFocused: false,
   notifsOpen: false,
   notifLastSeen: Number(localStorage.getItem(NOTIF_SEEN_KEY) || 0),
-  progressRange: "week", // "week" | "month" | "all"
+  rightBarOpen: true, // collapses the right activity bar to an icon rail
+  userMenuOpen: false, // the Settings/Log out popover off the sidebar's account row
 
   // Chat / run-detail view
   openRunId: null,
@@ -184,9 +226,14 @@ async function loadAll(silent) {
     state.documents = documents;
     state.memory = memory;
     state.analytics = analytics;
-    state.loadError = null;
   } catch (err) {
-    state.loadError = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Not signed in")) {
+      state.tenant = { name: "Founder", email: "founder@example.com" };
+      state.loadError = null;
+    } else {
+      state.loadError = msg;
+    }
   }
   state.loading = false;
   render();
@@ -219,10 +266,6 @@ function deptLabel(key) {
 
 function formatClockTime(d) {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
-
-function formatClockDate(d) {
-  return d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
 }
 
 function isToday(iso) {
@@ -392,7 +435,8 @@ function parseCSV(text) {
 // ---------- theme ----------
 
 function initTheme() {
-  const saved = localStorage.getItem(THEME_KEY);
+  const urlTheme = new URLSearchParams(window.location.search).get("theme");
+  const saved = urlTheme || localStorage.getItem(THEME_KEY);
   state.theme = saved === "light" || saved === "dark" ? saved : "light";
   document.documentElement.setAttribute("data-theme", state.theme);
 }
@@ -402,6 +446,15 @@ function toggleTheme() {
   localStorage.setItem(THEME_KEY, state.theme);
   document.documentElement.setAttribute("data-theme", state.theme);
   render();
+}
+
+// This page has no login screen of its own — it only works once you've
+// already signed in from the main app, in this same browser (shared
+// session cookie). So logging out here just clears that cookie, then sends
+// you back to the main app's root, where its real login screen lives.
+async function logout() {
+  await fetchJSON("/api/auth/logout", { method: "POST" }).catch(() => null);
+  window.location.href = "/";
 }
 
 // ---------- icons ----------
@@ -420,45 +473,143 @@ function render() {
       ${renderSidebar()}
       <div class="main">
         ${renderTopbar()}
-        <div class="content">${renderView()}</div>
+        <div class="content${state.view === "home" ? " content-home" : ""}">${renderView()}</div>
       </div>
+      ${renderRightBar()}
     </div>
     <div class="toast" id="toast"></div>
     ${state.modal ? renderModalOverlay() : ""}
   `;
   attachHandlers();
   if (window.lucide) window.lucide.createIcons();
+  syncLaserFlow();
 }
+
+// ---------- laser flow (Home only) ----------
+//
+// A WebGL shader effect (see laser-flow.js) used as a wide aura behind the
+// Home tab. It lives outside #app so normal re-renders do not recreate the
+// WebGL context; syncLaserFlow() only resizes/recolors that persistent layer.
+let laserFlowEl = null;
+let laserFlowHandle = null;
+
+function ensureLaserFlowEl() {
+  if (laserFlowEl) return laserFlowEl;
+  laserFlowEl = document.createElement("div");
+  laserFlowEl.className = "laser-flow-overlay";
+  laserFlowEl.setAttribute("aria-hidden", "true");
+  document.body.insertBefore(laserFlowEl, document.body.firstChild);
+  return laserFlowEl;
+}
+
+function laserFlowAccent() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#6d5bf6";
+}
+
+function destroyLaserFlow() {
+  if (laserFlowHandle) {
+    laserFlowHandle.destroy();
+    laserFlowHandle = null;
+  }
+}
+
+function syncLaserFlow() {
+  const el = ensureLaserFlowEl();
+  if (state.view !== "home") {
+    el.style.display = "none";
+    if (laserFlowHandle?.pause) laserFlowHandle.pause();
+    return;
+  }
+  el.style.display = "block";
+  if (!laserFlowHandle && window.LaserFlow?.mount) {
+    laserFlowHandle = window.LaserFlow.mount(el, { theme: state.theme });
+  } else if (laserFlowHandle) {
+    if (laserFlowHandle.resume) laserFlowHandle.resume();
+    laserFlowHandle.setTheme?.(state.theme);
+    laserFlowHandle.syncSphere?.();
+  }
+}
+window.addEventListener("laserflow:ready", () => {
+  if (state.view === "home") syncLaserFlow();
+});
+window.addEventListener("resize", () => {
+  if (state.view === "home") {
+    syncLaserFlow();
+    laserFlowHandle?.syncSphere?.();
+  }
+});
 
 function renderSidebar() {
   const orgName = state.tenant?.organizationName || "Your organization";
   const initial = (state.tenant?.name || state.tenant?.email || "?").slice(0, 1).toUpperCase();
+  const collapsed = !!state.sidebarCollapsed;
   return `
-    <aside class="sidebar${state.sidebarOpen ? " open" : ""}" id="sidebar">
+    <aside class="sidebar${state.sidebarOpen ? " open" : ""}${collapsed ? " collapsed" : ""}" id="sidebar">
       <div class="sidebar-brand">
-        <span class="sidebar-brand-mark">${icon("sparkle")}</span>
+        <button type="button" class="sidebar-brand-mark" id="sidebar-brand-mark" aria-label="${collapsed ? "Expand sidebar" : "CEO Agent"}" title="${collapsed ? "Expand sidebar" : "CEO Agent"}">
+          ${icon("box")}
+        </button>
         <span class="sidebar-brand-text">
-          <div class="sidebar-brand-title">CeoAgent</div>
+          <div class="sidebar-brand-title">CEO Agent</div>
           <div class="sidebar-brand-sub">${escapeHtml(orgName)}</div>
         </span>
+        <button type="button" class="sidebar-collapse-btn" id="sidebar-collapse-toggle" aria-label="${collapsed ? "Expand sidebar" : "Collapse sidebar"}" title="${collapsed ? "Expand sidebar" : "Collapse sidebar"}">
+          ${icon(collapsed ? "chevrons-right" : "chevrons-left")}
+        </button>
       </div>
       <nav class="sidebar-nav">
         ${NAV_ITEMS.map(
           (item) => `
-          <button type="button" class="sidebar-nav-link${state.view === item.key ? " active" : ""}" data-nav="${item.key}">
+          <button type="button" class="sidebar-nav-link${state.view === item.key ? " active" : ""}" data-nav="${item.key}" title="${escapeHtml(item.label)}">
             ${icon(item.icon)}<span>${item.label}</span>
           </button>
         `,
         ).join("")}
       </nav>
+      ${!collapsed ? renderSidebarToolsCard() : ""}
+      ${!collapsed ? renderSidebarStatusCard() : ""}
       <div class="sidebar-user">
         <span class="sidebar-user-avatar">${escapeHtml(initial)}</span>
         <span class="sidebar-user-text">
           <div class="sidebar-user-name">${escapeHtml(state.tenant?.name || state.tenant?.email || "Signed in")}</div>
           <div class="sidebar-user-sub">${escapeHtml(state.tenant?.email || "")}</div>
         </span>
+        <button type="button" class="sidebar-user-menu" id="sidebar-user-menu-btn" aria-label="Account menu">${icon("more-vertical")}</button>
+        ${state.userMenuOpen ? renderUserMenu() : ""}
       </div>
     </aside>
+  `;
+}
+
+function renderUserMenu() {
+  return `
+    <div class="user-menu-popover" id="user-menu-popover">
+      <button type="button" class="user-menu-item" data-nav="settings">${icon("settings")}<span>Settings</span></button>
+      <button type="button" class="user-menu-item danger" id="logout-btn">${icon("log-out")}<span>Log out</span></button>
+    </div>
+  `;
+}
+
+// Live agent-activity status, replacing the old sidebar "Upgrade to Pro"
+// promo — real data (which departments are running right now) is more
+// useful real estate than an upsell for a CEO who's trying to see at a
+// glance whether anything is in flight.
+function renderSidebarStatusCard() {
+  const running = runningAgentKeys();
+  const total = state.departments.length;
+  return `
+    <button type="button" class="sidebar-status-card" data-nav="agents">
+      <div class="sidebar-status-head">
+        <span class="sidebar-status-title">Agents</span>
+        <span class="sidebar-status-badge${running.size ? " live" : ""}">${running.size} active</span>
+      </div>
+      <div class="sidebar-status-dots">
+        ${state.departments
+          .map((d) => `<span class="sidebar-status-dot${running.has(d.key) ? " running" : ""}" style="background:${d.color[state.theme]}" title="${escapeHtml(d.label)}"></span>`)
+          .join("")}
+      </div>
+      <p class="sidebar-status-foot">${total - running.size} idle · ${total} total</p>
+    </button>
   `;
 }
 
@@ -473,31 +624,34 @@ function searchResults() {
 }
 
 function renderTopbar() {
-  const now = new Date();
   const results = state.searchFocused ? searchResults() : null;
   const unseenNotifs = notificationItems().filter((n) => n.ts > state.notifLastSeen);
+  const initial = (state.tenant?.name || state.tenant?.email || "?").slice(0, 1).toUpperCase();
 
   return `
     <header class="topbar">
       <button type="button" class="topbar-menu-btn" id="sidebar-toggle" aria-label="Menu">${icon("menu")}</button>
-      <div class="topbar-search">
-        <span class="topbar-search-icon">${icon("search")}</span>
-        <input id="topbar-search-input" type="text" placeholder="Search anything…" value="${escapeHtml(state.searchQuery)}" autocomplete="off" />
-        <span class="topbar-search-kbd">Ctrl K</span>
-        ${state.searchFocused && state.searchQuery.trim() ? renderSearchResults(results) : ""}
-      </div>
       <div class="topbar-spacer"></div>
-      <button type="button" class="topbar-icon-btn" id="theme-toggle" aria-label="Toggle theme">
-        ${icon(state.theme === "light" ? "sun" : "moon")}
-      </button>
-      <button type="button" class="topbar-icon-btn" id="notif-toggle" aria-label="Notifications">
-        ${icon("bell")}
-        ${unseenNotifs.length ? `<span class="topbar-badge">${unseenNotifs.length > 9 ? "9+" : unseenNotifs.length}</span>` : ""}
-      </button>
-      ${state.notifsOpen ? renderNotifs() : ""}
-      <div class="topbar-clock">
-        <strong>${formatClockTime(now)}</strong>
-        ${formatClockDate(now)}
+      <div class="topbar-pill">
+        ${
+          state.searchFocused
+            ? `<div class="topbar-search open">
+                <span class="topbar-search-icon">${icon("search")}</span>
+                <input id="topbar-search-input" type="text" placeholder="Search anything…" value="${escapeHtml(state.searchQuery)}" autocomplete="off" />
+                <span class="topbar-search-kbd">Esc</span>
+                ${state.searchQuery.trim() ? renderSearchResults(results) : ""}
+              </div>`
+            : `<button type="button" class="topbar-icon-btn" id="topbar-search-toggle" aria-label="Search" title="Search">${icon("search")}</button>`
+        }
+        <button type="button" class="topbar-icon-btn" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+          ${icon(state.theme === "light" ? "sun" : "moon")}
+        </button>
+        <button type="button" class="topbar-icon-btn" id="notif-toggle" aria-label="Notifications" title="Notifications">
+          ${icon("bell")}
+          ${unseenNotifs.length ? `<span class="topbar-badge">${unseenNotifs.length > 9 ? "9+" : unseenNotifs.length}</span>` : ""}
+        </button>
+        ${state.notifsOpen ? renderNotifs() : ""}
+        <button type="button" class="topbar-avatar" data-nav="settings" aria-label="Account" title="Account">${escapeHtml(initial)}</button>
       </div>
     </header>
   `;
@@ -574,6 +728,93 @@ function renderNotifs() {
   `;
 }
 
+// ---------- render: right bar ----------
+//
+// A persistent activity panel (every view, not just Home) — live/running
+// tasks, a quick today-tally, and recent activity. Collapses to a narrow
+// icon rail rather than disappearing entirely, so the toggle is always in
+// the same reachable spot regardless of state (no hidden/escaping-overflow
+// tricks needed for the toggle button itself).
+
+function renderRightBar() {
+  const running = activeRuns().filter((r) => r.status === "running");
+  const today = activeRuns().filter((r) => isToday(r.createdAt));
+  const doneToday = today.filter((r) => r.status === "success").length;
+  const recent = activeRuns().slice(0, 8);
+  const open = state.rightBarOpen;
+
+  return `
+    <aside class="right-bar${open ? "" : " collapsed"}">
+      ${
+        open
+          ? `
+        <div class="right-bar-inner">
+          <div class="right-bar-head">
+            <span class="right-bar-title">Live Activity</span>
+            <button type="button" class="right-bar-toggle" id="right-bar-toggle" aria-label="Collapse activity panel" title="Collapse activity panel">
+              ${icon("panel-right-close")}
+            </button>
+          </div>
+
+          <div class="right-bar-stats">
+            <div class="right-bar-stat">
+              <span class="right-bar-stat-value${running.length ? " live" : ""}">${running.length}</span>
+              <span class="right-bar-stat-label">Running</span>
+            </div>
+            <div class="right-bar-stat">
+              <span class="right-bar-stat-value">${doneToday}</span>
+              <span class="right-bar-stat-label">Done today</span>
+            </div>
+            <div class="right-bar-stat">
+              <span class="right-bar-stat-value">${today.length}</span>
+              <span class="right-bar-stat-label">Today</span>
+            </div>
+          </div>
+
+          <div class="right-bar-section">
+            <div class="right-bar-section-title">In Progress</div>
+            ${
+              running.length
+                ? running.map((r) => renderRightBarRow(r)).join("")
+                : `<div class="right-bar-empty">Nothing running right now.</div>`
+            }
+          </div>
+
+          <div class="right-bar-section">
+            <div class="right-bar-section-title">Recent Activity</div>
+            ${
+              recent.length
+                ? recent.map((r) => renderRightBarRow(r)).join("")
+                : `<div class="right-bar-empty">No activity yet.</div>`
+            }
+          </div>
+        </div>
+      `
+          : `
+        <button type="button" class="right-bar-toggle collapsed-btn" id="right-bar-toggle" aria-label="Expand activity panel" title="Expand activity panel">
+          ${icon("panel-right-open")}
+          ${running.length ? `<span class="right-bar-toggle-badge">${running.length}</span>` : ""}
+        </button>
+      `
+      }
+    </aside>
+  `;
+}
+
+function renderRightBarRow(r) {
+  const color = deptColor(r.agentKey);
+  const dotStyle = r.status === "running" ? `background:${color}` : "";
+  return `
+    <button type="button" class="right-bar-row" data-open-run="${r.id}">
+      <span class="right-bar-row-dot ${r.status}" style="${dotStyle}"></span>
+      <span class="right-bar-row-body">
+        <span class="right-bar-row-title">${escapeHtml(truncate(r.goal, 42))}</span>
+        <span class="right-bar-row-meta">${escapeHtml(deptLabel(r.agentKey))} · ${formatRelativeTime(r.createdAt)}</span>
+      </span>
+    </button>
+  `;
+}
+
 // ---------- render: views ----------
 
 function renderView() {
@@ -593,60 +834,158 @@ function renderView() {
 function renderHome() {
   const period = greetingPeriod();
   return `
-    <div class="home-eyebrow">Plan · Research · Create · Execute</div>
-    <h1 class="home-greeting">Good ${period}, ${escapeHtml(firstName())}</h1>
-    <p class="home-subtitle">Your AI executive team is ready to turn ideas into progress.</p>
+    <div class="home-view">
+      <div class="home-hero">
+        <div class="home-hero-text">
+          <div class="home-eyebrow">👋 Good ${period}, ${escapeHtml(firstName())}</div>
+          <h1 class="home-greeting">What <strong>should</strong> we <strong>build</strong> today?</h1>
+          <p class="home-subtitle">Your AI co-founder to plan, execute and grow your ideas.</p>
+        </div>
+      </div>
 
-    <div class="home-grid">
-      <div class="home-col-main">
-        <div class="hero-card">
-          <div class="hero-blob" aria-hidden="true"></div>
-          ${renderComposer()}
-        </div>
-        ${renderQuickActions()}
-        <div class="panel-row">
-          ${renderTodayTasksCard()}
-          ${renderRecentConversationsCard()}
-        </div>
+      ${renderOrbit()}
+
+      <div class="composer-wrap">
+        ${renderComposer()}
+        ${renderSuggestionChips()}
       </div>
-      <div class="home-col-side">
-        ${renderAgentsCard()}
-        ${renderProgressCard()}
+
+      ${renderHomeFocusCard()}
+    </div>
+  `;
+}
+
+// Fills the space left under the composer now that the old four-card
+// bottom row is gone — one focused, actionable list (today's runs, as a
+// checklist) rather than reviving the whole row, since the right bar
+// already covers "recent activity across everything."
+function renderHomeFocusCard() {
+  const todays = activeRuns()
+    .filter((r) => isToday(r.createdAt))
+    .slice(0, 8);
+  const doneCount = todays.filter((r) => r.status === "success").length;
+
+  return `
+    <div class="home-focus-card glass-surface">
+      <div class="home-focus-head">
+        <span class="home-focus-title">Today's Focus</span>
+        ${todays.length ? `<span class="home-focus-count">${doneCount}/${todays.length} done</span>` : ""}
       </div>
+      <div class="home-focus-list">
+        ${
+          todays.length
+            ? todays
+                .map(
+                  (r) => `
+          <button type="button" class="home-focus-row" data-open-run="${r.id}">
+            <span class="home-focus-check ${r.status}">${r.status === "success" ? icon("check") : ""}</span>
+            <span class="home-focus-text">${escapeHtml(truncate(r.goal, 64))}</span>
+            <span class="home-focus-time">${new Date(r.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>
+          </button>
+        `,
+                )
+                .join("")
+            : `<div class="home-focus-empty">Nothing run yet today — try the composer above.</div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+// The home hero's central 3D metallic bot: a sleek titanium/platinum sphere with
+// embedded dark curved OLED visor, glowing neon capsule eyes, autonomous
+// looking/blinking, spring bounce jiggle, and real-time cursor tracking.
+function renderHomeBotFace() {
+  return `
+    <div class="metallic-bot-container" id="metallic-bot-slot" aria-label="CEO Agent 3D Metallic Bot"></div>
+  `;
+}
+
+// Percent-of-container anchor for each QUICK_ACTIONS card, in the same
+// order — loosely hexagonal around the center sphere. Also drives the SVG
+// connector lines in renderOrbit(), so the dashed line always lands on the
+// card it points to even as the layout reflows.
+const ORBIT_LAYOUT = [
+  { x: 20, y: 20 }, // plan
+  { x: 8, y: 50 }, // research
+  { x: 20, y: 80 }, // execute
+  { x: 80, y: 20 }, // analyze
+  { x: 92, y: 50 }, // improve
+  { x: 80, y: 80 }, // grow
+];
+
+function renderOrbit() {
+  const connectors = QUICK_ACTIONS.map((a, i) => {
+    const p = ORBIT_LAYOUT[i];
+    const dx = p.x * 10;
+    const dy = p.y * 10;
+    const cx = 500;
+    const cy = 500;
+    const sx = dx + (cx - dx) * 0.3;
+    const sy = dy + (cy - dy) * 0.3;
+    const ex = dx + (cx - dx) * 0.64;
+    const ey = dy + (cy - dy) * 0.64;
+    return `
+      <line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" class="orbit-connector" />
+      <circle cx="${sx}" cy="${sy}" r="9" class="orbit-dot" style="fill:${a.fg}" />
+    `;
+  }).join("");
+
+  const cards = QUICK_ACTIONS.map(
+    (a, i) => `
+    <button type="button" class="orbit-card glass-surface" data-quick-action="${a.key}" style="left:${ORBIT_LAYOUT[i].x}%;top:${ORBIT_LAYOUT[i].y}%">
+      <span class="orbit-card-icon" style="background:${a.bg};color:${a.fg}">${icon(a.icon)}</span>
+      <span class="orbit-card-body">
+        <span class="orbit-card-title">${a.label}${icon("arrow-right")}</span>
+        <span class="orbit-card-desc">${a.desc}</span>
+      </span>
+    </button>
+  `,
+  ).join("");
+
+  return `
+    <div class="orbit">
+      <div class="orbit-sphere" aria-hidden="true">${renderHomeBotFace()}</div>
+      <svg class="orbit-lines" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">${connectors}</svg>
+      ${cards}
     </div>
   `;
 }
 
 function renderComposer() {
   const target = state.composerTargetAgent ? deptMeta(state.composerTargetAgent) : null;
+  const activeModel = MODEL_OPTIONS.find((o) => o.value === state.composerProvider)?.label ?? "Auto";
   return `
     <form id="composer-form" class="composer-form">
-      <div class="composer-shell">
-        ${
-          target
-            ? `<div class="composer-target-chip">
-                ${icon("corner-down-right")}
-                Sending directly to <strong>${escapeHtml(target.label)}</strong>
-                <button type="button" id="composer-target-clear" aria-label="Send to CEO instead">${icon("x")}</button>
-              </div>`
-            : ""
-        }
-        <textarea id="composer-input" class="composer-textarea" rows="2" placeholder="Tell me what you want to do today…" ${state.composerBusy ? "disabled" : ""}>${escapeHtml(state.composerDraft)}</textarea>
-        ${renderAttachmentChips()}
-        <div class="composer-row">
+      ${
+        target
+          ? `<div class="composer-target-chip">
+              ${icon("corner-down-right")}
+              Sending directly to <strong>${escapeHtml(target.label)}</strong>
+              <button type="button" id="composer-target-clear" aria-label="Send to CEO instead">${icon("x")}</button>
+            </div>`
+          : ""
+      }
+      ${renderAttachmentChips()}
+      <div class="composer-laser-glow" aria-hidden="true"></div>
+      <div class="composer-pill-shell glass-surface">
+        <textarea id="composer-input" class="composer-pill-input" rows="1" placeholder="Ask your CEO Agent anything…" ${state.composerBusy ? "disabled" : ""}>${escapeHtml(state.composerDraft)}</textarea>
+        <div class="composer-controls-row">
           <input type="file" id="composer-file-input" multiple hidden />
-          <button type="button" class="composer-icon-btn" id="composer-attach-btn" title="Attach a file" ${state.composerUploading ? "disabled" : ""}>
-            ${state.composerUploading ? icon("loader-circle") : icon("paperclip")}
+          <button type="button" class="composer-ctrl-btn" id="composer-attach-btn" title="Attach a file" ${state.composerUploading ? "disabled" : ""}>
+            ${state.composerUploading ? icon("loader-circle") : icon("plus")}
           </button>
-          <button type="button" class="composer-icon-btn" title="Web context (coming soon)" disabled>${icon("globe")}</button>
-          <button type="button" class="composer-icon-btn" title="More options (coming soon)" disabled>${icon("sliders-horizontal")}</button>
-          <label class="composer-model">
+          <label class="composer-model-trigger" title="Model">
             ${icon("sparkles")}
-            <select id="composer-provider">
+            <span class="composer-model-label">${escapeHtml(activeModel)}</span>
+            <span class="composer-model-chevron">${icon("chevron-down")}</span>
+            <select id="composer-provider" aria-label="Model">
               ${MODEL_OPTIONS.map((o) => `<option value="${o.value}"${o.value === state.composerProvider ? " selected" : ""}>${o.label}</option>`).join("")}
             </select>
           </label>
-          <span class="composer-spacer"></span>
+          <button type="button" class="composer-ctrl-btn composer-ctrl-pill" title="Web context (coming soon)" disabled>${icon("globe")}<span>Web</span></button>
+          <span class="composer-controls-spacer"></span>
+          <button type="button" class="composer-ctrl-btn" title="Voice input (coming soon)" disabled>${icon("mic")}</button>
           <button type="submit" class="composer-send" ${state.composerBusy ? "disabled" : ""} aria-label="Send">
             ${state.composerBusy ? icon("loader-circle") : icon("arrow-up")}
           </button>
@@ -677,74 +1016,11 @@ function renderAttachmentChips() {
   `;
 }
 
-function renderQuickActions() {
+function renderSuggestionChips() {
   return `
-    <div class="quick-actions">
-      ${QUICK_ACTIONS.map(
-        (a) => `
-        <button type="button" class="quick-action-card" data-quick-action="${a.key}">
-          <span class="quick-action-icon" style="background:${a.bg};color:${a.fg}">${icon(a.icon)}</span>
-          <span class="quick-action-title">${a.label}${icon("chevron-right")}</span>
-          <span class="quick-action-desc">${a.desc}</span>
-        </button>
-      `,
-      ).join("")}
-    </div>
-  `;
-}
-
-function renderTodayTasksCard() {
-  const todays = activeRuns()
-    .filter((r) => isToday(r.createdAt))
-    .slice(0, 6);
-  return `
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Today's Tasks</span>
-        <button type="button" class="card-link" data-nav="tasks">View all${icon("chevron-right")}</button>
-      </div>
-      ${
-        todays.length
-          ? todays
-              .map(
-                (r) => `
-          <button type="button" class="task-row" data-open-run="${r.id}" style="width:100%;text-align:left;border-left:none;border-right:none;background:none">
-            <span class="task-check ${r.status}">${r.status === "success" ? icon("check") : ""}</span>
-            <span class="task-text">${escapeHtml(r.goal)}</span>
-            <span class="task-time">${new Date(r.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>
-          </button>
-        `,
-              )
-              .join("")
-          : `<div class="card-empty">Nothing run yet today — try the composer above.</div>`
-      }
-    </div>
-  `;
-}
-
-function renderRecentConversationsCard() {
-  const recent = activeRuns().slice(0, 6);
-  return `
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Recent Conversations</span>
-        <button type="button" class="card-link" data-nav="tasks">View all${icon("chevron-right")}</button>
-      </div>
-      ${
-        recent.length
-          ? recent
-              .map(
-                (r) => `
-          <button type="button" class="convo-row" data-open-run="${r.id}" style="width:100%;text-align:left;border-top:1px solid var(--border);background:none">
-            <span class="convo-dot" style="background:${deptColor(r.agentKey)}"></span>
-            <span class="convo-text">${escapeHtml(r.goal)}</span>
-            <span class="convo-time">${formatRelativeTime(r.createdAt)}</span>
-          </button>
-        `,
-              )
-              .join("")
-          : `<div class="card-empty">No conversations yet.</div>`
-      }
+    <div class="suggestion-chips">
+      ${SUGGESTION_CHIPS.map((c) => `<button type="button" class="suggestion-chip" data-suggestion="${c.key}">${icon(c.icon)}${escapeHtml(c.label)}</button>`).join("")}
+      <button type="button" class="suggestion-chip suggestion-chip-more" id="suggestion-more">${icon("grid-2x2")}More</button>
     </div>
   `;
 }
@@ -753,134 +1029,21 @@ function runningAgentKeys() {
   return new Set(activeRuns().filter((r) => r.status === "running").map((r) => r.agentKey));
 }
 
-function renderAgentsCard() {
-  const running = runningAgentKeys();
+// Sidebar card (above the Agents status card) — flat, no shadow, matching
+// .sidebar-status-card's own look rather than Home's glass cards.
+function renderSidebarToolsCard() {
   return `
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">AI Agents</span>
-        <button type="button" class="card-link" data-nav="agents">View all${icon("chevron-right")}</button>
-      </div>
-      <div class="agent-list">
-        ${state.departments
-          .map((d) => {
-            const isRunning = running.has(d.key);
-            return `
-            <div class="agent-row">
-              <span class="agent-dot" style="background:${d.color[state.theme]}"></span>
-              <span class="agent-text">
-                <div class="agent-name">${escapeHtml(d.label)}</div>
-                <div class="agent-status${isRunning ? " running" : ""}">${isRunning ? "Running now" : "Idle"}</div>
-              </span>
-            </div>
-          `;
-          })
-          .join("")}
-      </div>
-    </div>
-  `;
-}
-
-const PROGRESS_RANGE_LABELS = { week: "This Week", month: "This Month", all: "All Time" };
-
-function rangeStartDate(range) {
-  const now = new Date();
-  if (range === "all") return new Date(0);
-  if (range === "month") {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    return start;
-  }
-  const day = (now.getDay() + 6) % 7; // Monday = 0
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - day);
-  monday.setHours(0, 0, 0, 0);
-  return monday;
-}
-
-// Completed/In Progress/Blocked only — real run statuses are
-// running/success/error, nothing maps to a 4th "pending" state, so that
-// category is deliberately not shown rather than faked as a permanent 0.
-// The ring/legend reflect the selected range; the bar strip below it always
-// shows the last 7 days as a fixed trend line, regardless of range, since
-// the backend's runsByDay only covers the last 14 days — stretching that
-// into a monthly/all-time bar chart would mean fabricating buckets it
-// doesn't have data for.
-function computeProgress(range) {
-  const start = rangeStartDate(range);
-  const rangeRuns = activeRuns().filter((r) => new Date(r.createdAt) >= start);
-  const completed = rangeRuns.filter((r) => r.status === "success").length;
-  const inProgress = rangeRuns.filter((r) => r.status === "running").length;
-  const blocked = rangeRuns.filter((r) => r.status === "error").length;
-  const total = rangeRuns.length;
-
-  const byDay = state.analytics?.runsByDay ?? [];
-  const last7 = byDay.slice(-7);
-  const bars = last7.map((entry) => ({
-    label: new Date(entry.date).toLocaleDateString(undefined, { weekday: "short" }).slice(0, 1),
-    count: entry.count,
-  }));
-
-  return { completed, inProgress, blocked, total, bars };
-}
-
-function progressRing(pct, { size = 86, strokeWidth = 8 } = {}) {
-  const r = (size - strokeWidth) / 2;
-  const c = size / 2;
-  const circumference = 2 * Math.PI * r;
-  const clamped = Math.max(0, Math.min(1, pct));
-  const dash = clamped * circumference;
-  const fillArc =
-    clamped > 0
-      ? `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--success)" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${dash} ${circumference - dash}" transform="rotate(-90 ${c} ${c})" />`
-      : "";
-  return `
-    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
-      <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${strokeWidth}" />
-      ${fillArc}
-    </svg>
-  `;
-}
-
-function renderProgressCard() {
-  const { completed, inProgress, blocked, total, bars } = computeProgress(state.progressRange);
-  const pct = total > 0 ? completed / total : 0;
-  const maxBar = Math.max(1, ...bars.map((b) => b.count));
-
-  return `
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Progress</span>
-        <select class="progress-range-select" id="progress-range-select">
-          ${Object.entries(PROGRESS_RANGE_LABELS)
-            .map(([value, label]) => `<option value="${value}"${value === state.progressRange ? " selected" : ""}>${label}</option>`)
-            .join("")}
-        </select>
-      </div>
-      <div class="progress-card-body">
-        <div class="progress-ring-wrap">
-          ${progressRing(pct)}
-          <span class="progress-ring-label">
-            <div class="progress-ring-frac">${completed}/${total}</div>
-            <div class="progress-ring-sub">Tasks</div>
-          </span>
-        </div>
-        <div class="progress-legend">
-          <span class="progress-legend-item"><span class="progress-legend-dot" style="background:var(--success)"></span>${completed} Completed</span>
-          <span class="progress-legend-item"><span class="progress-legend-dot" style="background:var(--warning)"></span>${inProgress} In Progress</span>
-          <span class="progress-legend-item"><span class="progress-legend-dot" style="background:var(--error)"></span>${blocked} Blocked</span>
-        </div>
-      </div>
-      <div class="progress-bars">
-        ${bars
-          .map(
-            (b) => `
-          <div class="progress-bar-col">
-            <span class="progress-bar" style="height:${Math.max(3, (b.count / maxBar) * 40)}px"></span>
-            <span class="progress-bar-label">${b.label[0]}</span>
-          </div>
+    <div class="sidebar-tools-card">
+      <div class="sidebar-tools-title">Quick Tools</div>
+      <div class="sidebar-tools-grid">
+        ${QUICK_TOOLS.map(
+          (t) => `
+          <button type="button" class="sidebar-tool-btn" ${t.nav ? `data-nav="${t.nav}"` : `data-quick-tool="${t.key}"`}>
+            ${icon(t.icon)}
+            <span>${t.label}</span>
+          </button>
         `,
-          )
-          .join("")}
+        ).join("")}
       </div>
     </div>
   `;
@@ -997,8 +1160,448 @@ function renderAnalyticsPage() {
       `,
         )
         .join("")}
+      <div class="stub-head" style="margin-top:12px">
+        <h2 class="stub-title" style="font-size:16px">Connected project</h2>
+      </div>
+      ${renderExternalAnalytics()}
     </div>
   `;
+}
+
+function renderExternalAnalytics() {
+  const ext = state.externalAnalytics;
+  if (ext.loading && !ext.loaded) return `<div class="stub-placeholder">Loading connected project's analytics…</div>`;
+  if (ext.error) return `<div class="stub-placeholder">Couldn't load connected project's analytics: ${escapeHtml(ext.error)}</div>`;
+  const data = ext.data;
+  if (!data || !data.configured) {
+    return `
+      <div class="stub-placeholder">
+        No analytics source connected yet.<br /><br />
+        <button type="button" class="btn-secondary" id="analytics-connect-btn">Connect one in Accounts</button>
+      </div>
+    `;
+  }
+  if (data.error) return `<div class="stub-placeholder">Connected, but the last fetch failed: ${escapeHtml(data.error)}</div>`;
+
+  if (state.externalDashboard.expanded) return renderExternalDashboard();
+
+  const known = ["login", "signup", "page_view"];
+  const top = data.totals.byEventType.slice(0, 6);
+  return `
+    <button type="button" class="btn-primary" id="external-dashboard-btn" style="margin-bottom:12px">
+      ${escapeHtml(data.label || "Connected Project")} analytics ${icon("bar-chart-3")}
+    </button>
+    <div class="stat-tiles">
+      <div class="stat-tile"><div class="stat-tile-value">${data.totals.uniqueVisitors}</div><div class="stat-tile-label">Unique visitors (14d)</div></div>
+      <div class="stat-tile"><div class="stat-tile-value">${data.totals.totalEvents}</div><div class="stat-tile-label">Total events (14d)</div></div>
+      ${top
+        .filter((e) => known.includes(e.eventType))
+        .map((e) => `<div class="stat-tile"><div class="stat-tile-value">${e.count}</div><div class="stat-tile-label">${escapeHtml(e.eventType.replace("_", " "))}s</div></div>`)
+        .join("")}
+    </div>
+    ${top
+      .filter((e) => !known.includes(e.eventType))
+      .map(
+        (e) => `
+      <div class="stub-list-row">
+        <span class="stub-list-title">${escapeHtml(e.eventType)}</span>
+        <span class="stub-list-meta">${e.count} event${e.count === 1 ? "" : "s"}</span>
+      </div>
+    `,
+      )
+      .join("")}
+  `;
+}
+
+async function loadExternalAnalytics(force) {
+  if (state.externalAnalytics.loaded && !force) return;
+  state.externalAnalytics.loading = true;
+  render();
+  try {
+    state.externalAnalytics.data = await fetchJSON("/api/analytics/external");
+    state.externalAnalytics.loaded = true;
+    state.externalAnalytics.error = null;
+  } catch (err) {
+    state.externalAnalytics.error = err instanceof Error ? err.message : String(err);
+  }
+  state.externalAnalytics.loading = false;
+  render();
+}
+LAZY_LOADERS.analytics = () => loadExternalAnalytics(false);
+
+// ---------- Connected-project full dashboard (expanded in-place, same tab) ----------
+
+const EXT_RANGES = [
+  { key: "7d", label: "7 days" },
+  { key: "30d", label: "30 days" },
+  { key: "90d", label: "90 days" },
+];
+
+const EXT_METRICS = [
+  { key: "visitors", label: "Unique visitors" },
+  { key: "pageViews", label: "Page views" },
+  { key: "linkVisits", label: "Link visits" },
+  { key: "clicks", label: "Clicks" },
+  { key: "logins", label: "Logins" },
+  { key: "signups", label: "Sign-ups" },
+  { key: "listingViews", label: "Listing views" },
+  { key: "bookingStarts", label: "Booking attempts" },
+];
+
+function formatCompact(n) {
+  if (n == null) return "0";
+  if (n < 10000) return n.toLocaleString();
+  if (n < 1e6) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K`;
+  return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+function formatChartDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function niceCeil(value) {
+  if (value <= 0) return 1;
+  const pow = 10 ** Math.floor(Math.log10(value));
+  const n = value / pow;
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return step * pow;
+}
+
+function deltaBadge(pct) {
+  const dir = pct > 0 ? "up" : pct < 0 ? "down" : "flat";
+  const sign = pct > 0 ? "↑" : pct < 0 ? "↓" : "";
+  return `<span class="delta ${dir}">${sign} ${Math.abs(pct)}%</span>`;
+}
+
+function buildTrendChart(daily, metricKey) {
+  const W = 760, H = 220, padL = 42, padR = 12, padT = 16, padB = 28;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const values = daily.map((d) => d[metricKey] ?? 0);
+  const niceMax = niceCeil(Math.max(...values, 1));
+  const xStep = plotW / Math.max(values.length - 1, 1);
+
+  const points = values.map((v, i) => ({
+    x: padL + i * xStep,
+    y: padT + plotH - (v / niceMax) * plotH,
+    v,
+    date: daily[i].date,
+  }));
+
+  const linePath = `M${points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L")}`;
+  const areaPath = `${linePath} L${points[points.length - 1].x.toFixed(1)},${(padT + plotH).toFixed(1)} L${points[0].x.toFixed(1)},${(padT + plotH).toFixed(1)} Z`;
+
+  const gridFracs = [0, 1 / 3, 2 / 3, 1];
+  const gridlines = gridFracs
+    .map((f) => {
+      const y = padT + plotH * f;
+      const val = Math.round(niceMax * (1 - f));
+      return `
+        <line x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="var(--border)" stroke-width="1" />
+        <text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="9.5" fill="var(--text-faint)">${formatCompact(val)}</text>
+      `;
+    })
+    .join("");
+
+  const xLabelIdx = points.length > 1 ? [0, Math.floor((points.length - 1) / 2), points.length - 1] : [0];
+  const xLabels = [...new Set(xLabelIdx)]
+    .map((i) => `<text x="${points[i].x}" y="${H - 6}" text-anchor="middle" font-size="9.5" fill="var(--text-faint)">${escapeHtml(formatChartDate(points[i].date))}</text>`)
+    .join("");
+
+  const last = points[points.length - 1];
+
+  return {
+    points,
+    svg: `
+      <svg viewBox="0 0 ${W} ${H}" class="trend-svg" role="img" aria-label="Trend chart">
+        ${gridlines}
+        <path d="${areaPath}" fill="var(--accent)" fill-opacity="0.1" stroke="none" />
+        <path d="${linePath}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <circle cx="${last.x}" cy="${last.y}" r="4" fill="var(--accent)" stroke="var(--bg-raised)" stroke-width="2" />
+        <text x="${Math.min(last.x + 8, W - padR - 24)}" y="${last.y - 8}" font-size="11" font-weight="700" fill="var(--text)">${formatCompact(last.v)}</text>
+        ${xLabels}
+        <line class="trend-crosshair" x1="0" x2="0" y1="${padT}" y2="${padT + plotH}" stroke="var(--text-faint)" stroke-width="1" opacity="0" />
+        <circle class="trend-hoverdot" r="4" fill="var(--accent)" stroke="var(--bg-raised)" stroke-width="2" opacity="0" />
+        <rect class="trend-hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent" />
+      </svg>
+    `,
+  };
+}
+
+function attachTrendInteraction(points) {
+  const svg = document.querySelector(".trend-svg");
+  const hit = document.querySelector(".trend-hit");
+  const crosshair = document.querySelector(".trend-crosshair");
+  const dot = document.querySelector(".trend-hoverdot");
+  const tooltip = document.getElementById("trend-tooltip");
+  if (!svg || !hit || !tooltip) return;
+
+  const metricLabel = EXT_METRICS.find((m) => m.key === state.externalDashboard.metric)?.label || "";
+
+  function handleMove(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const scale = 760 / rect.width;
+    const xUser = (clientX - rect.left) * scale;
+    let nearest = points[0], best = Infinity;
+    for (const p of points) {
+      const d = Math.abs(p.x - xUser);
+      if (d < best) { best = d; nearest = p; }
+    }
+    crosshair.setAttribute("x1", nearest.x);
+    crosshair.setAttribute("x2", nearest.x);
+    crosshair.setAttribute("opacity", "1");
+    dot.setAttribute("cx", nearest.x);
+    dot.setAttribute("cy", nearest.y);
+    dot.setAttribute("opacity", "1");
+
+    const wrap = svg.closest(".chart-wrap");
+    const wrapRect = wrap.getBoundingClientRect();
+    const px = rect.left - wrapRect.left + nearest.x / scale;
+    const py = rect.top - wrapRect.top + nearest.y / scale;
+    tooltip.style.left = `${px}px`;
+    tooltip.style.top = `${py}px`;
+    tooltip.classList.add("show");
+    tooltip.querySelector(".ct-value").textContent = `${formatCompact(nearest.v)} ${metricLabel}`;
+    tooltip.querySelector(".ct-date").textContent = formatChartDate(nearest.date);
+  }
+
+  hit.addEventListener("pointermove", (e) => handleMove(e.clientX));
+  hit.addEventListener("pointerleave", () => {
+    crosshair.setAttribute("opacity", "0");
+    dot.setAttribute("opacity", "0");
+    tooltip.classList.remove("show");
+  });
+}
+
+function renderExtHeader(data) {
+  return `
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <span class="card-title">${escapeHtml(data.label || "Connected Project")}</span>
+        <button type="button" class="row-icon-btn" id="external-dashboard-refresh-btn" aria-label="Refresh">${icon("refresh-cw")}</button>
+      </div>
+      <div class="page-tabs">
+        ${EXT_RANGES.map((r) => `<button type="button" class="page-tab${state.externalDashboard.range === r.key ? " active" : ""}" data-ext-range="${r.key}">${r.label}</button>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderExtStatTiles(data) {
+  const { current, pctChange } = data.totals;
+  return `
+    <div class="stat-tiles">
+      ${EXT_METRICS.map(
+        (m) => `
+        <div class="stat-tile">
+          <div class="stat-tile-head">
+            <div class="stat-tile-value">${formatCompact(current[m.key])}</div>
+            ${deltaBadge(pctChange[m.key])}
+          </div>
+          <div class="stat-tile-label">${escapeHtml(m.label)}</div>
+        </div>
+      `,
+      ).join("")}
+    </div>
+  `;
+}
+
+function renderExtTrendSection(data) {
+  const { svg, points } = buildTrendChart(data.daily, state.externalDashboard.metric);
+  const tableRows = data.daily
+    .map((d) => `<tr><td>${escapeHtml(formatChartDate(d.date))}</td><td>${formatCompact(d[state.externalDashboard.metric] ?? 0)}</td></tr>`)
+    .join("");
+  return `
+    <div class="card" style="margin-top:18px">
+      <div class="chart-card-head">
+        <span class="card-title">Trend over time</span>
+        <button type="button" class="table-toggle-btn" id="ext-trend-table-toggle">${state.externalDashboard.trendTableView ? "View as chart" : "View as table"}</button>
+      </div>
+      <div class="page-tabs" style="margin-bottom:14px">
+        ${EXT_METRICS.map((m) => `<button type="button" class="page-tab${state.externalDashboard.metric === m.key ? " active" : ""}" data-ext-metric="${m.key}">${escapeHtml(m.label)}</button>`).join("")}
+      </div>
+      ${
+        state.externalDashboard.trendTableView
+          ? `<table class="viz-sr-table"><thead><tr><th>Date</th><th>${escapeHtml(EXT_METRICS.find((m) => m.key === state.externalDashboard.metric)?.label || "")}</th></tr></thead><tbody>${tableRows}</tbody></table>`
+          : `
+          <div class="chart-wrap">
+            ${svg}
+            <div class="chart-tooltip" id="trend-tooltip"><div class="ct-value"></div><div class="ct-date"></div></div>
+          </div>
+        `
+      }
+      <div data-trend-points='${JSON.stringify(points.map((p) => ({ x: p.x, y: p.y, v: p.v, date: p.date })))}' style="display:none"></div>
+    </div>
+  `;
+}
+
+function renderExtEventBreakdown(data) {
+  const rows = EXT_METRICS.filter((m) => m.key !== "visitors")
+    .map((m) => ({ label: m.label, value: data.totals.current[m.key] }))
+    .sort((a, b) => b.value - a.value);
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  return `
+    <div class="card">
+      <div class="card-head"><span class="card-title">Events this period</span></div>
+      ${rows
+        .map(
+          (r) => `
+        <div class="rank-row">
+          <span class="rank-label">${escapeHtml(r.label)}</span>
+          <span class="rank-bar-track"><span class="rank-bar-fill" style="width:${(r.value / max) * 100}%"></span></span>
+          <span class="rank-value">${formatCompact(r.value)}</span>
+        </div>
+      `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderExtFunnel(data) {
+  const base = data.funnel[0]?.count || 1;
+  return `
+    <div class="card">
+      <div class="card-head"><span class="card-title">Conversion funnel</span></div>
+      ${data.funnel
+        .map((f, i) => {
+          const pctOfBase = Math.round((f.count / base) * 100);
+          const opacity = 0.4 + i * (0.6 / Math.max(data.funnel.length - 1, 1));
+          return `
+          <div class="funnel-row">
+            <div class="funnel-row-head">
+              <span class="funnel-row-label">${escapeHtml(f.stage)}</span>
+              <span class="funnel-row-meta">${formatCompact(f.count)} · ${pctOfBase}%</span>
+            </div>
+            <div class="funnel-track"><div class="funnel-fill" style="width:${pctOfBase}%;opacity:${opacity.toFixed(2)}"></div></div>
+          </div>
+        `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderExtDevice(data) {
+  if (!data.device.length) return "";
+  const slotVar = (i) => `var(--series-${(i % 3) + 1})`;
+  return `
+    <div class="card" style="margin-top:18px">
+      <div class="card-head"><span class="card-title">Audience — device</span></div>
+      <div class="device-track">
+        ${data.device.map((d, i) => `<span class="device-seg" style="width:${d.pct}%;background:${slotVar(i)}"></span>`).join("")}
+      </div>
+      <div class="device-legend">
+        ${data.device
+          .map(
+            (d, i) => `
+          <span class="device-legend-item">
+            <span class="device-legend-dot" style="background:${slotVar(i)}"></span>
+            <span class="device-legend-label">${escapeHtml(d.device)}</span>
+            <span class="device-legend-meta">${d.pct}% · ${formatCompact(d.visitors)}</span>
+          </span>
+        `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderExtRankCard(title, items, labelKey, valueKey, valueFormatter) {
+  if (!items.length) {
+    return `<div class="card"><div class="card-head"><span class="card-title">${escapeHtml(title)}</span></div><div class="stub-placeholder" style="padding:24px">No data in this period.</div></div>`;
+  }
+  const max = Math.max(...items.map((it) => it[valueKey]), 1);
+  return `
+    <div class="card">
+      <div class="card-head"><span class="card-title">${escapeHtml(title)}</span></div>
+      ${items
+        .map(
+          (it) => `
+        <div class="rank-row">
+          <span class="rank-label">${escapeHtml(it[labelKey])}</span>
+          <span class="rank-bar-track"><span class="rank-bar-fill" style="width:${(it[valueKey] / max) * 100}%"></span></span>
+          <span class="rank-value">${valueFormatter ? valueFormatter(it) : formatCompact(it[valueKey])}</span>
+        </div>
+      `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderExtHeatmap(data) {
+  const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const byDow = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  for (const c of data.peakHours.cells) byDow[c.dow][c.hour] = c.count;
+  const max = data.peakHours.max || 1;
+
+  const hourHeaderCells = Array.from({ length: 24 }, (_, h) => `<div class="heatmap-hour-label">${h % 3 === 0 ? h : ""}</div>`).join("");
+  const rows = DAYS.map((dayLabel, dow) => {
+    const cells = byDow[dow]
+      .map((count, hour) => {
+        const opacity = count === 0 ? 0 : 0.12 + (count / max) * 0.88;
+        return `<div class="heatmap-cell" style="opacity:${opacity.toFixed(2)}" tabindex="0" role="img" aria-label="${escapeHtml(dayLabel)} ${hour}:00, ${count} events"><title>${escapeHtml(dayLabel)} ${hour}:00 — ${count} event${count === 1 ? "" : "s"}</title></div>`;
+      })
+      .join("");
+    return `<div class="heatmap-day-label">${dayLabel}</div>${cells}`;
+  }).join("");
+
+  return `
+    <div class="card" style="margin-top:18px">
+      <div class="card-head"><span class="card-title">Peak hours (UTC)</span></div>
+      <div class="heatmap-scroll">
+        <div class="heatmap-grid">
+          <div></div>${hourHeaderCells}
+          ${rows}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderExternalDashboard() {
+  const dash = state.externalDashboard;
+  const backBtn = `<button type="button" class="card-link chat-back" id="external-dashboard-back-btn" style="margin-bottom:14px">${icon("chevron-left")} Back to summary</button>`;
+  if (dash.loading && !dash.data) return `${backBtn}<div class="stub-placeholder">Loading dashboard…</div>`;
+  if (dash.error) return `${backBtn}<div class="stub-placeholder">Couldn't load dashboard: ${escapeHtml(dash.error)}</div>`;
+  const data = dash.data;
+  if (!data || !data.configured) return `${backBtn}<div class="stub-placeholder">No analytics source connected.</div>`;
+  if (data.error) return `${backBtn}<div class="stub-placeholder">Connected, but the last fetch failed: ${escapeHtml(data.error)}</div>`;
+
+  return `
+    <div class="viz-root">
+      ${backBtn}
+      ${renderExtHeader(data)}
+      ${renderExtStatTiles(data)}
+      ${renderExtTrendSection(data)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px">
+        ${renderExtEventBreakdown(data)}
+        ${renderExtFunnel(data)}
+      </div>
+      ${renderExtDevice(data)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px">
+        ${renderExtRankCard("Top pages", data.topPages, "path", "views")}
+        ${renderExtRankCard("Traffic sources", data.sources, "source", "visitors")}
+      </div>
+      ${renderExtRankCard("Exit pages", data.exitPages, "path", "exits", (it) => `${formatCompact(it.exits)} · ${it.exitRate}% exit`)}
+      ${renderExtHeatmap(data)}
+    </div>
+  `;
+}
+
+async function loadExternalDashboard(range) {
+  state.externalDashboard.range = range;
+  state.externalDashboard.loading = true;
+  state.externalDashboard.error = null;
+  render();
+  try {
+    state.externalDashboard.data = await fetchJSON(`/api/analytics/external/dashboard?range=${encodeURIComponent(range)}`);
+  } catch (err) {
+    state.externalDashboard.error = err instanceof Error ? err.message : String(err);
+  }
+  state.externalDashboard.loading = false;
+  render();
 }
 
 function renderSettingsPage() {
@@ -1267,6 +1870,7 @@ function switchView(view) {
   state.openRun = null;
   state.view = view;
   state.sidebarOpen = false;
+  state.userMenuOpen = false;
   if (view === "settings" && !state.settingsFields && !state.settingsLoading) loadSettings();
   LAZY_LOADERS[view]?.();
   render();
@@ -1476,9 +2080,84 @@ function markNotifsRead() {
   render();
 }
 
+// Shared by the orbit cards, suggestion chips and Quick Tools grid — each
+// just seeds the composer with a starting prompt and (optionally) routes it
+// straight to one department instead of the CEO.
+function fillComposerAndFocus(prompt, targetAgent = null) {
+  state.composerDraft = prompt;
+  state.composerTargetAgent = targetAgent;
+  render();
+  const input = document.getElementById("composer-input");
+  if (input) {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
 // ---------- handlers ----------
 
+let flurryTrackingBound = false;
+
+function initFlurryBotInteraction() {
+  const bot = document.getElementById("flurry-bot");
+  if (!bot) return;
+
+  bot.onclick = () => {
+    bot.classList.add("is-winking");
+    setTimeout(() => bot.classList.remove("is-winking"), 650);
+  };
+
+  if (flurryTrackingBound) return;
+  flurryTrackingBound = true;
+
+  window.addEventListener("pointermove", (e) => {
+    const curBot = document.getElementById("flurry-bot");
+    if (!curBot) return;
+
+    const rect = curBot.getBoundingClientRect();
+    const botCenterX = rect.left + rect.width * 0.5;
+    const botCenterY = rect.top + rect.height * 0.5;
+
+    const dx = e.clientX - botCenterX;
+    const dy = e.clientY - botCenterY;
+    const dist = Math.hypot(dx, dy);
+
+    // Activated on hover or proximity (< 360px)
+    const isOver = curBot.matches(":hover") || dist < 360;
+
+    if (isOver) {
+      curBot.setAttribute("data-mood", "active");
+      const angle = Math.atan2(dy, dx);
+      const distRatio = Math.min(1.0, Math.max(0.18, dist / 220));
+      const eyeX = Math.cos(angle) * 14 * distRatio;
+      const eyeY = Math.sin(angle) * 11 * distRatio;
+
+      const tiltX = Math.max(-14, Math.min(14, -dy * 0.05));
+      const tiltY = Math.max(-16, Math.min(16, dx * 0.05));
+
+      curBot.style.setProperty("--eye-x", `${eyeX.toFixed(1)}px`);
+      curBot.style.setProperty("--eye-y", `${eyeY.toFixed(1)}px`);
+      curBot.style.setProperty("--bot-tilt-x", `${tiltX.toFixed(1)}deg`);
+      curBot.style.setProperty("--bot-tilt-y", `${tiltY.toFixed(1)}deg`);
+    } else {
+      if (curBot.getAttribute("data-mood") === "active") {
+        curBot.setAttribute("data-mood", "idle");
+        curBot.style.removeProperty("--eye-x");
+        curBot.style.removeProperty("--eye-y");
+        curBot.style.removeProperty("--bot-tilt-x");
+        curBot.style.removeProperty("--bot-tilt-y");
+      }
+    }
+  }, { passive: true });
+}
+
 function attachHandlers() {
+  const botEngine = window.MetallicBot || window.FluffyBot;
+  if (botEngine) {
+    const slot = document.getElementById("metallic-bot-slot") || document.getElementById("fluffy-bot-slot");
+    if (slot) botEngine.mount(slot);
+  }
   document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.nav));
   });
@@ -1487,12 +2166,41 @@ function attachHandlers() {
     state.sidebarOpen = !state.sidebarOpen;
     render();
   });
+  document.getElementById("sidebar-collapse-toggle")?.addEventListener("click", () => {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    render();
+  });
+  document.getElementById("sidebar-brand-mark")?.addEventListener("click", () => {
+    if (state.sidebarCollapsed) {
+      state.sidebarCollapsed = false;
+      render();
+    }
+  });
   document.getElementById("sidebar-backdrop")?.addEventListener("click", () => {
     state.sidebarOpen = false;
     render();
   });
 
   document.getElementById("theme-toggle")?.addEventListener("click", toggleTheme);
+
+  document.getElementById("right-bar-toggle")?.addEventListener("click", () => {
+    state.rightBarOpen = !state.rightBarOpen;
+    render();
+  });
+
+  document.getElementById("sidebar-user-menu-btn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.userMenuOpen = !state.userMenuOpen;
+    render();
+  });
+  document.getElementById("logout-btn")?.addEventListener("click", logout);
+
+  document.getElementById("topbar-search-toggle")?.addEventListener("click", () => {
+    state.searchFocused = true;
+    state.notifsOpen = false;
+    render();
+    document.getElementById("topbar-search-input")?.focus();
+  });
 
   const searchInput = document.getElementById("topbar-search-input");
   if (searchInput) {
@@ -1532,6 +2240,7 @@ function attachHandlers() {
     });
   });
   document.getElementById("settings-save-btn")?.addEventListener("click", saveSettings);
+  document.getElementById("analytics-connect-btn")?.addEventListener("click", () => switchView("accounts"));
 
   document.getElementById("chat-back-btn")?.addEventListener("click", () => switchView("chat"));
   document.getElementById("chat-stop-btn")?.addEventListener("click", () => {
@@ -1563,22 +2272,51 @@ function attachHandlers() {
   const composerInput = document.getElementById("composer-input");
   composerInput?.addEventListener("input", (e) => {
     state.composerDraft = e.target.value; // tracked so background-poll re-renders don't wipe it; deliberately no render() here (would cost focus/cursor position on every keystroke)
+    e.target.style.height = "auto";
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+  });
+  if (composerInput) {
+    composerInput.style.height = "auto";
+    composerInput.style.height = `${Math.min(composerInput.scrollHeight, 120)}px`;
+  }
+  composerInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById("composer-form")?.requestSubmit();
+    }
   });
 
   document.querySelectorAll("[data-quick-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const action = QUICK_ACTIONS.find((a) => a.key === btn.dataset.quickAction);
-      if (!action) return;
-      state.composerTargetAgent = QUICK_ACTION_TARGETS[action.key] ?? null;
-      state.composerDraft = action.prompt;
-      render();
-      const input = document.getElementById("composer-input");
-      if (input) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-        input.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      if (action) fillComposerAndFocus(action.prompt, QUICK_ACTION_TARGETS[action.key] ?? null);
     });
+  });
+  document.querySelectorAll("[data-suggestion]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const chip = SUGGESTION_CHIPS.find((c) => c.key === btn.dataset.suggestion);
+      if (chip) fillComposerAndFocus(chip.prompt);
+    });
+  });
+  document.getElementById("suggestion-more")?.addEventListener("click", () => {
+    document.getElementById("composer-input")?.focus();
+  });
+  document.querySelectorAll("[data-quick-tool]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tool = QUICK_TOOLS.find((t) => t.key === btn.dataset.quickTool);
+      if (!tool?.prompt) return;
+      // Quick Tools now lives in the sidebar (visible on every view), but
+      // the composer it fills only exists on Home — switch there first if
+      // we're not already on it, or the draft would be set on state with
+      // nothing visible to show for it.
+      if (state.view !== "home") switchView("home");
+      fillComposerAndFocus(tool.prompt);
+    });
+  });
+  document.getElementById("promo-focus-btn")?.addEventListener("click", () => {
+    const input = document.getElementById("composer-input");
+    input?.scrollIntoView({ behavior: "smooth", block: "center" });
+    input?.focus();
   });
   document.getElementById("composer-target-clear")?.addEventListener("click", () => {
     state.composerTargetAgent = null;
@@ -1602,11 +2340,6 @@ function attachHandlers() {
   const providerSelect = document.getElementById("composer-provider");
   providerSelect?.addEventListener("change", (e) => {
     state.composerProvider = e.target.value;
-  });
-
-  document.getElementById("progress-range-select")?.addEventListener("change", (e) => {
-    state.progressRange = e.target.value;
-    render();
   });
 
   const form = document.getElementById("composer-form");
@@ -1639,6 +2372,10 @@ function attachOutsideClickHandler() {
     }
     if (!e.target.closest(".topbar-notifs") && !e.target.closest("#notif-toggle") && state.notifsOpen) {
       state.notifsOpen = false;
+      render();
+    }
+    if (!e.target.closest(".sidebar-user") && state.userMenuOpen) {
+      state.userMenuOpen = false;
       render();
     }
   });

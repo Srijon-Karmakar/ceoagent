@@ -1,6 +1,7 @@
 import type { LinearTaskRef } from "../orchestrator.js";
 import { runCeoAgentWithFallback, runSpecialistAgentWithFallback, type LlmProviderChoice } from "../providers/llmFallback.js";
-import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun, getRunController } from "./store.js";
+import { createRun, appendEvent, setLinearTasks, setSessionId, finishRun, getRun, getRunController, costSince } from "./store.js";
+import { assertCanStartRun } from "../guardrails.js";
 import { getEnvValue } from "./settings.js";
 
 // Fires a POST to WEBHOOK_URL (if configured) with the finished run's result,
@@ -49,6 +50,12 @@ export function notifyWebhook(record: {
  * is what decides whether the run's final event reads "Stopped by user.",
  * so cancellation is labeled correctly either way.
  */
+/** Throws LimitExceededError (status 429) when the tenant is over its daily run/spend cap. */
+export function enforceRunLimits() {
+  const startOfDayUtc = new Date().toISOString().slice(0, 10) + "T00:00:00.000Z";
+  assertCanStartRun(costSince(startOfDayUtc));
+}
+
 export function startRun(
   record: { id: string },
   run: (abortController: AbortController) => Promise<{ linearTasks: LinearTaskRef[]; sessionId?: string }>,
@@ -87,6 +94,7 @@ export function startRun(
  * attachment's text, appended by the HTTP layer's `buildPrompt`).
  */
 export function startCeoRun(displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
+  enforceRunLimits();
   const record = createRun(displayGoal, "ceo", provider);
   startRun(record, (abortController) =>
     runCeoAgentWithFallback(promptText, (event) => appendEvent(record.id, event), undefined, provider, abortController),
@@ -96,6 +104,7 @@ export function startCeoRun(displayGoal: string, promptText: string, provider: L
 
 /** Same as `startCeoRun`, but runs one specialist directly, bypassing the CEO. */
 export function startSpecialistRun(agentKey: string, displayGoal: string, promptText: string, provider: LlmProviderChoice = "auto") {
+  enforceRunLimits();
   const record = createRun(displayGoal, agentKey, provider);
   startRun(record, (abortController) =>
     runSpecialistAgentWithFallback(agentKey, promptText, (event) => appendEvent(record.id, event), undefined, provider, abortController),

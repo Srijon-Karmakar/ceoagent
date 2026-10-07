@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getDataDir } from "../paths.js";
 import { getEnvValue } from "../server/settings.js";
@@ -50,12 +51,12 @@ function allowedGroupIds(): string[] {
 }
 
 export function isFacebookConnected(): boolean {
-  return existsSync(tokenFile());
+  return docExists(tokenFile());
 }
 
 export function disconnectFacebook() {
   const file = tokenFile();
-  if (existsSync(file)) unlinkSync(file);
+  if (docExists(file)) deleteDoc(file);
 }
 
 export function getFacebookAuthUrl(state?: string): string {
@@ -124,12 +125,12 @@ export async function handleFacebookCallback(code: string): Promise<void> {
     expiresAt: Date.now() + (longJson.expires_in ?? 60 * 24 * 3600) * 1000,
   };
   ensureDir();
-  writeFileSync(tokenFile(), JSON.stringify(connection, null, 2));
+  writeDoc(tokenFile(), connection);
 }
 
 function getConnection(): FacebookConnection {
   if (!isFacebookConnected()) throw new Error("Facebook is not connected");
-  const connection: FacebookConnection = JSON.parse(readFileSync(tokenFile(), "utf-8"));
+  const connection: FacebookConnection = readDoc(tokenFile())!;
   if (Date.now() > connection.expiresAt) {
     throw new Error("Facebook connection expired — reconnect it from the Accounts page.");
   }
