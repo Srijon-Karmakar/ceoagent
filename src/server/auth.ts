@@ -81,6 +81,37 @@ interface SupabaseUser {
 interface TenantRecord extends TenantContext {
   createdAt: string;
   updatedAt: string;
+  uiTheme?: UiTheme;
+}
+
+// Which UI design `/` serves: "ceopro" (default, the former /preview
+// dashboard) or "ceounik" (the original dashboard, which also hosts the
+// login screen). Independent of light/dark mode, which stays client-side.
+export type UiTheme = "ceopro" | "ceounik";
+export const UI_THEMES: UiTheme[] = ["ceopro", "ceounik"];
+const DEFAULT_UI_THEME: UiTheme = "ceopro";
+// No-auth (single-tenant) deployments have no tenant record to hang the
+// preference on, so it lives in its own global doc instead.
+const LOCAL_UI_THEME_FILE = join(getGlobalDataDir(), "ui-theme.json");
+
+export function getUiTheme(tenant: TenantContext | undefined): UiTheme {
+  const saved = tenant
+    ? readTenants().users[tenant.userId]?.uiTheme
+    : readDoc<{ uiTheme?: UiTheme }>(LOCAL_UI_THEME_FILE)?.uiTheme;
+  return saved && UI_THEMES.includes(saved) ? saved : DEFAULT_UI_THEME;
+}
+
+export function setUiTheme(tenant: TenantContext | undefined, uiTheme: UiTheme) {
+  if (!tenant) {
+    writeDoc(LOCAL_UI_THEME_FILE, { uiTheme });
+    return;
+  }
+  const data = readTenants();
+  const record = data.users[tenant.userId];
+  if (!record) return;
+  record.uiTheme = uiTheme;
+  record.updatedAt = new Date().toISOString();
+  writeTenants(data);
 }
 
 type TenantsFile = {

@@ -880,6 +880,23 @@ button, input, textarea {
   cursor: pointer;
 }
 
+.account-theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 4px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.24));
+  border-radius: 14px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.account-theme-btn:hover { background: rgba(127, 127, 127, 0.12); }
+
 .account-signout-btn:hover {
   background: var(--error);
   color: #fff;

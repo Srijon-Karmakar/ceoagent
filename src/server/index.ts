@@ -21,6 +21,10 @@ import {
   restoreTenant,
   resolveAuthFlowTenant,
   setSessionCookie,
+  getUiTheme,
+  setUiTheme,
+  UI_THEMES,
+  type UiTheme,
 } from "./auth.js";
 import { getBaseDir, getTenantContext, runWithTenant } from "../paths.js";
 import { DEPARTMENTS, buildAgentsRegistry } from "../agents.js";
@@ -219,6 +223,27 @@ app.use("/preview", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+// `/` serves whichever UI design the signed-in user picked — ceopro (the
+// /preview dashboard, default) or ceounik (public/index.html). The URL never
+// changes between them. Signed-out visitors always get ceounik's page since
+// it's the one with the login screen; ceopro has none of its own.
+app.get(["/", "/index.html"], async (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store"); // response varies per user
+  let tenant;
+  if (isSupabaseAuthConfigured()) {
+    try {
+      tenant = await readRequestTenant(req);
+    } catch {
+      next();
+      return;
+    }
+  }
+  if (getUiTheme(tenant) === "ceopro") {
+    res.sendFile(join(__dirname, "public", "preview", "index.html"));
+    return;
+  }
+  next();
+});
 app.use(express.static(join(__dirname, "public")));
 
 // Loopback-only, bearer-token-authenticated — not a Supabase-auth'd /api
@@ -259,6 +284,20 @@ app.get("/api/auth/me", (req, res) => {
 
 app.use("/api/automation", requireAutomationTenant);
 app.use("/api", requireAuth);
+
+app.get("/api/ui-theme", (req, res) => {
+  res.json({ uiTheme: getUiTheme(req.tenant), themes: UI_THEMES });
+});
+
+app.post("/api/ui-theme", (req, res) => {
+  const uiTheme = req.body?.uiTheme as UiTheme;
+  if (!UI_THEMES.includes(uiTheme)) {
+    res.status(400).json({ error: `uiTheme must be one of: ${UI_THEMES.join(", ")}` });
+    return;
+  }
+  setUiTheme(req.tenant, uiTheme);
+  res.json({ uiTheme });
+});
 
 // --- Uploads: extracts text from an uploaded file for the client to attach
 // to a goal, rather than the app storing it or an agent needing a file tool.

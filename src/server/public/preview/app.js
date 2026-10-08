@@ -452,6 +452,18 @@ function toggleTheme() {
 // already signed in from the main app, in this same browser (shared
 // session cookie). So logging out here just clears that cookie, then sends
 // you back to the main app's root, where its real login screen lives.
+// Design theme (ceopro ↔ ceounik) is saved on the account; `/` serves the
+// chosen one, so switching is just save + reload at the same URL.
+async function switchUiTheme(uiTheme) {
+  await fetchJSON("/api/ui-theme", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uiTheme }),
+  });
+  sessionStorage.removeItem("uiThemeReloadAt");
+  window.location.href = "/";
+}
+
 async function logout() {
   await fetchJSON("/api/auth/logout", { method: "POST" }).catch(() => null);
   window.location.href = "/";
@@ -592,6 +604,7 @@ function renderUserMenu() {
   return `
     <div class="user-menu-popover" id="user-menu-popover">
       <button type="button" class="user-menu-item" data-nav="settings">${reicon("setting", 16)}<span>Settings</span></button>
+      <button type="button" class="user-menu-item" id="ui-theme-switch">${icon("palette")}<span>Switch to CeoUnik theme</span></button>
       <button type="button" class="user-menu-item danger" id="logout-btn">${icon("log-out")}<span>Log out</span></button>
     </div>
   `;
@@ -2201,6 +2214,7 @@ function attachHandlers() {
     render();
   });
   document.getElementById("logout-btn")?.addEventListener("click", logout);
+  document.getElementById("ui-theme-switch")?.addEventListener("click", () => switchUiTheme("ceounik"));
 
   document.getElementById("topbar-search-toggle")?.addEventListener("click", () => {
     state.searchFocused = true;

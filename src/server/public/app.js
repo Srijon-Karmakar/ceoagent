@@ -448,6 +448,37 @@ async function loadCurrentUser() {
   }
 }
 
+// `/` serves whichever UI design the account picked (see index.ts). This
+// page (ceounik) is also what signed-out visitors get, since it owns the
+// login screen — so once a user is signed in, reload `/` if their choice is
+// ceopro and the server will hand back that page instead. The URL never
+// changes. sessionStorage guards against a reload loop if the server and
+// this check ever disagree.
+async function openSelectedUiTheme() {
+  if (!state.auth.user || state.auth.mode === "reset") return false;
+  try {
+    const { uiTheme } = await fetchJSON("/api/ui-theme");
+    if (uiTheme === "ceounik") return false;
+    const last = Number(sessionStorage.getItem("uiThemeReloadAt") || 0);
+    if (Date.now() - last < 10_000) return false;
+    sessionStorage.setItem("uiThemeReloadAt", String(Date.now()));
+    window.location.reload();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function switchUiTheme(uiTheme) {
+  await fetchJSON("/api/ui-theme", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uiTheme }),
+  });
+  sessionStorage.removeItem("uiThemeReloadAt");
+  window.location.reload();
+}
+
 async function resetToSignedOut(message) {
   localStorage.removeItem(AUTH_STORAGE_KEY);
   if (eventSource) {
@@ -522,6 +553,7 @@ async function handleAuthSubmit(form) {
       await syncBackendSession(result.access_token);
     }
     await loadCurrentUser();
+    if (await openSelectedUiTheme()) return;
     await loadAppData();
   } catch (err) {
     state.auth.error = err instanceof Error ? err.message : String(err);
@@ -2329,6 +2361,9 @@ function renderHeader(mobile) {
               <span>Organization ID</span>
               <code>${escapeHtml(state.auth.user?.organizationId || "")}</code>
             </div>
+            <button type="button" class="account-theme-btn" id="ui-theme-switch">
+              <span>Switch to CeoPro theme</span>
+            </button>
             <button type="button" class="account-signout-btn" id="logout-btn">
               <span>Sign out</span>
             </button>
@@ -5762,6 +5797,7 @@ function attachHandlers() {
   document.getElementById("sidebar-backdrop")?.addEventListener("click", closeSidebar);
   document.getElementById("theme-toggle")?.addEventListener("click", toggleTheme);
   document.getElementById("logout-btn")?.addEventListener("click", logout);
+  document.getElementById("ui-theme-switch")?.addEventListener("click", () => switchUiTheme("ceopro"));
 
   document.querySelectorAll(".run-item").forEach((li) => {
     li.addEventListener("click", () => selectRun(li.dataset.runId));
@@ -6627,6 +6663,7 @@ async function init() {
   await loadAuthConfig();
   await handleAuthRedirect();
   await loadCurrentUser();
+  if (await openSelectedUiTheme()) return;
   if (state.auth.user && state.auth.mode !== "reset") {
     await loadAppData();
   }
