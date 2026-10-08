@@ -8,21 +8,21 @@
 // signed in there in the same browser.
 
 const NAV_ITEMS = [
-  { key: "home", label: "Home", icon: "home" },
-  { key: "chat", label: "Chat", icon: "message-circle" },
-  { key: "agents", label: "Agents", icon: "users" },
-  { key: "tasks", label: "Tasks", icon: "list-checks" },
-  { key: "crm", label: "CRM", icon: "handshake" },
-  { key: "playbook", label: "Playbook", icon: "calendar-days" },
-  { key: "portfolio", label: "Portfolio", icon: "folder-open" },
-  { key: "scheduler", label: "Calendar", icon: "calendar" },
-  { key: "knowledge", label: "Knowledge", icon: "brain" },
-  { key: "documents", label: "Documents", icon: "file-text" },
-  { key: "files", label: "Files", icon: "folder" },
-  { key: "accounts", label: "Accounts", icon: "plug-zap" },
-  { key: "tools", label: "Tools", icon: "wrench" },
-  { key: "analytics", label: "Analytics", icon: "chart-column" },
-  { key: "settings", label: "Settings", icon: "settings" },
+  { key: "home", label: "Home", icon: "home", reicon: "home" },
+  { key: "chat", label: "Chat", icon: "message-circle", reicon: "chat" },
+  { key: "agents", label: "Agents", icon: "users", reicon: "users" },
+  { key: "tasks", label: "Tasks", icon: "list-checks", reicon: "task" },
+  { key: "crm", label: "CRM", icon: "handshake", reicon: "handshake" },
+  { key: "playbook", label: "Playbook", icon: "calendar-days", reicon: "book" },
+  { key: "portfolio", label: "Portfolio", icon: "folder-open", reicon: "briefcase" },
+  { key: "scheduler", label: "Calendar", icon: "calendar", reicon: "calendar" },
+  { key: "knowledge", label: "Knowledge", icon: "brain", reicon: "lamp-on" },
+  { key: "documents", label: "Documents", icon: "file-text", reicon: "document" },
+  { key: "files", label: "Files", icon: "folder", reicon: "folder" },
+  { key: "accounts", label: "Accounts", icon: "plug-zap", reicon: "plug" },
+  { key: "tools", label: "Tools", icon: "wrench", reicon: "cpu-setting" },
+  { key: "analytics", label: "Analytics", icon: "chart-column", reicon: "chart-bar" },
+  { key: "settings", label: "Settings", icon: "settings", reicon: "setting" },
 ];
 
 // Pages whose data is fetched lazily the first time you navigate to them
@@ -115,10 +115,10 @@ const SUGGESTION_CHIPS = [
 // Bottom-row "Quick Tools" grid — a mix of nav shortcuts and composer
 // pre-fills, same two patterns QUICK_ACTIONS and SUGGESTION_CHIPS already use.
 const QUICK_TOOLS = [
-  { key: "new-project", label: "New Project", icon: "folder-plus", nav: "portfolio" },
-  { key: "new-task", label: "New Task", icon: "list-plus", nav: "tasks" },
-  { key: "brainstorm", label: "Brainstorm", icon: "lightbulb", prompt: "Help me brainstorm ideas for: " },
-  { key: "summarize", label: "Summarize", icon: "file-text", prompt: "Summarize the following: " },
+  { key: "new-project", label: "New Project", icon: "folder-plus", reicon: "folder-add", nav: "portfolio" },
+  { key: "new-task", label: "New Task", icon: "list-plus", reicon: "task", nav: "tasks" },
+  { key: "brainstorm", label: "Brainstorm", icon: "lightbulb", reicon: "lamp-on", prompt: "Help me brainstorm ideas for: " },
+  { key: "summarize", label: "Summarize", icon: "file-text", reicon: "document", prompt: "Summarize the following: " },
 ];
 
 const NOTIF_SEEN_KEY = "ceoagent_preview_notif_last_seen";
@@ -463,6 +463,10 @@ function icon(name) {
   return `<i data-lucide="${escapeHtml(name)}"></i>`;
 }
 
+function reicon(name, size = 18, weight = "outline") {
+  return `<re-icon icon="${escapeHtml(name)}" weight="${weight}" size="${size}"></re-icon>`;
+}
+
 // ---------- render: shell ----------
 
 function render() {
@@ -547,21 +551,24 @@ function renderSidebar() {
     <aside class="sidebar${state.sidebarOpen ? " open" : ""}${collapsed ? " collapsed" : ""}" id="sidebar">
       <div class="sidebar-brand">
         <button type="button" class="sidebar-brand-mark" id="sidebar-brand-mark" aria-label="${collapsed ? "Expand sidebar" : "CEO Agent"}" title="${collapsed ? "Expand sidebar" : "CEO Agent"}">
-          ${icon("box")}
+          <img src="/logo/icon.png" alt="" />
         </button>
         <span class="sidebar-brand-text">
-          <div class="sidebar-brand-title">CEO Agent</div>
+          <div class="sidebar-brand-title">
+            <img class="sidebar-brand-logo logo-for-light" src="/logo/logo-dark.png" alt="CEO Agent" />
+            <img class="sidebar-brand-logo logo-for-dark" src="/logo/logo-light.png" alt="CEO Agent" />
+          </div>
           <div class="sidebar-brand-sub">${escapeHtml(orgName)}</div>
         </span>
         <button type="button" class="sidebar-collapse-btn" id="sidebar-collapse-toggle" aria-label="${collapsed ? "Expand sidebar" : "Collapse sidebar"}" title="${collapsed ? "Expand sidebar" : "Collapse sidebar"}">
-          ${icon(collapsed ? "chevrons-right" : "chevrons-left")}
+          ${reicon(collapsed ? "chevron-right" : "chevron-left", 14)}
         </button>
       </div>
       <nav class="sidebar-nav">
         ${NAV_ITEMS.map(
           (item) => `
           <button type="button" class="sidebar-nav-link${state.view === item.key ? " active" : ""}" data-nav="${item.key}" title="${escapeHtml(item.label)}">
-            ${icon(item.icon)}<span>${item.label}</span>
+            ${reicon(item.reicon || item.icon, 18)}<span>${item.label}</span>
           </button>
         `,
         ).join("")}
@@ -574,7 +581,7 @@ function renderSidebar() {
           <div class="sidebar-user-name">${escapeHtml(state.tenant?.name || state.tenant?.email || "Signed in")}</div>
           <div class="sidebar-user-sub">${escapeHtml(state.tenant?.email || "")}</div>
         </span>
-        <button type="button" class="sidebar-user-menu" id="sidebar-user-menu-btn" aria-label="Account menu">${icon("more-vertical")}</button>
+        <button type="button" class="sidebar-user-menu" id="sidebar-user-menu-btn" aria-label="Account menu">${reicon("more2", 16)}</button>
         ${state.userMenuOpen ? renderUserMenu() : ""}
       </div>
     </aside>
@@ -584,7 +591,7 @@ function renderSidebar() {
 function renderUserMenu() {
   return `
     <div class="user-menu-popover" id="user-menu-popover">
-      <button type="button" class="user-menu-item" data-nav="settings">${icon("settings")}<span>Settings</span></button>
+      <button type="button" class="user-menu-item" data-nav="settings">${reicon("setting", 16)}<span>Settings</span></button>
       <button type="button" class="user-menu-item danger" id="logout-btn">${icon("log-out")}<span>Log out</span></button>
     </div>
   `;
@@ -1039,7 +1046,7 @@ function renderSidebarToolsCard() {
         ${QUICK_TOOLS.map(
           (t) => `
           <button type="button" class="sidebar-tool-btn" ${t.nav ? `data-nav="${t.nav}"` : `data-quick-tool="${t.key}"`}>
-            ${icon(t.icon)}
+            ${reicon(t.reicon || t.icon, 15)}
             <span>${t.label}</span>
           </button>
         `,
