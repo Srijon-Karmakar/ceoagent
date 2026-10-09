@@ -17,6 +17,13 @@ state.scheduler = {
   selectedDate: null,
 };
 
+const DEFAULT_SCHEDULER_PREVIEW = [
+  { id: "sch-1", label: "Daily Executive Standup & Briefing", goal: "Synthesize team activity, PR updates, and pipeline changes into a 3-bullet summary.", agentKey: "ceo", time: "09:00", enabled: true, recurrence: { type: "daily" } },
+  { id: "sch-2", label: "Weekly Growth & Pipeline Sync", goal: "Audit all CRM opportunities and auto-draft follow-up emails.", agentKey: "sales", time: "10:30", enabled: true, recurrence: { type: "weekly", weekdays: [1] } },
+  { id: "sch-3", label: "Social Media Roundup & Dispatch", goal: "Review published articles and queue thread highlights on Twitter/LinkedIn.", agentKey: "marketing", time: "14:00", enabled: true, recurrence: { type: "weekly", weekdays: [2, 4] } },
+  { id: "sch-4", label: "Automated Codebase Health Check", goal: "Run test suite and check for performance regressions.", agentKey: "developer", time: "23:00", enabled: false, recurrence: { type: "daily" } },
+];
+
 async function loadSchedules(force) {
   if (state.scheduler.loaded && !force) return;
   state.scheduler.loading = true;
@@ -26,7 +33,13 @@ async function loadSchedules(force) {
     state.scheduler.loaded = true;
     state.scheduler.error = null;
   } catch (err) {
-    state.scheduler.error = err instanceof Error ? err.message : String(err);
+    if (String(err).includes("Not signed in") || String(err).includes("401")) {
+      state.scheduler.schedules = DEFAULT_SCHEDULER_PREVIEW;
+      state.scheduler.loaded = true;
+      state.scheduler.error = null;
+    } else {
+      state.scheduler.error = err instanceof Error ? err.message : String(err);
+    }
   }
   state.scheduler.loading = false;
   render();
@@ -40,7 +53,7 @@ function schedulerAgentOptions() {
 function recurrenceSummary(r) {
   if (r.type === "once") return `Once on ${formatDate(r.date)}`;
   if (r.type === "daily") return `Daily${r.endDate ? ` until ${formatDate(r.endDate)}` : ""}`;
-  const days = r.weekdays.map((d) => WEEKDAY_LABELS[d]).join(", ");
+  const days = (r.weekdays || []).map((d) => WEEKDAY_LABELS[d] || d).join(", ");
   return `Weekly (${days})${r.endDate ? ` until ${formatDate(r.endDate)}` : ""}`;
 }
 
@@ -51,11 +64,11 @@ function scheduleOccursOn(schedule, dateStr) {
   if (r.endDate && dateStr > r.endDate) return false;
   if (r.type === "daily") return true;
   const weekday = new Date(`${dateStr}T00:00:00`).getDay();
-  return r.weekdays.includes(weekday);
+  return (r.weekdays || []).includes(weekday);
 }
 
 function filteredSchedules() {
-  return state.scheduler.schedules.filter((s) => (state.scheduler.filter === "all" ? true : state.scheduler.filter === "active" ? s.enabled : !s.enabled));
+  return (state.scheduler.schedules || []).filter((s) => (state.scheduler.filter === "all" ? true : state.scheduler.filter === "active" ? s.enabled : !s.enabled));
 }
 
 // ---------- render ----------
@@ -63,42 +76,81 @@ function filteredSchedules() {
 VIEW_RENDERERS.scheduler = function renderSchedulerPage() {
   if (state.scheduler.loading && !state.scheduler.loaded) return `<div class="stub-placeholder">Loading schedule…</div>`;
   if (state.scheduler.error) return `<div class="stub-placeholder">Couldn't load schedule: ${escapeHtml(state.scheduler.error)}</div>`;
+  const allSchedules = state.scheduler.schedules || [];
   const schedules = filteredSchedules();
+  const totalCount = allSchedules.length;
+  const activeCount = allSchedules.filter((s) => s.enabled).length;
 
   return `
-    <div class="stub-page">
-      <div class="stub-head">
-        <h1 class="stub-title">Calendar</h1>
-        <p class="stub-subtitle">Recurring or one-time automations for any agent.</p>
+    <div class="tasks-page calendar-page">
+      <div class="tasks-header">
+        <div class="tasks-header-title-col">
+          <div class="tasks-eyebrow">📅 Scheduled Automations</div>
+          <h1 class="tasks-title">Calendar <span class="tasks-count-pill">${totalCount}</span></h1>
+          <p class="tasks-subtitle">Recurring triggers, cron jobs, and scheduled workflows executing across your agents.</p>
+        </div>
       </div>
-      <div class="toolbar">
-        ${["all", "active", "disabled"]
-          .map((f) => `<button type="button" class="chip-filter${state.scheduler.filter === f ? " active" : ""}" data-sched-filter="${f}">${capitalize(f)}</button>`)
-          .join("")}
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="btn-primary" id="sched-new-btn">${icon("plus")} New automation</button>
-      </div>
+
       ${renderSchedulerGrid()}
-      <div class="card" style="margin-top:16px">
-        <div class="card-head"><span class="card-title">All automations</span></div>
-        ${
-          schedules.length
-            ? schedules
-                .map(
-                  (s) => `
-          <div class="stub-list-row">
-            <span class="agent-dot" style="background:${deptColor(s.agentKey)}"></span>
-            <span class="stub-list-title">${escapeHtml(s.label)}</span>
-            <span class="stub-list-meta">${escapeHtml(deptLabel(s.agentKey))} · ${recurrenceSummary(s.recurrence)} · ${escapeHtml(s.time)}</span>
-            <button type="button" class="chip-toggle ${s.enabled ? "on" : ""}" data-toggle-sched="${s.id}">${s.enabled ? "Enabled" : "Disabled"}</button>
-            <button type="button" class="row-icon-btn" data-edit-sched="${s.id}" aria-label="Edit">${icon("pencil")}</button>
-            <button type="button" class="row-icon-btn row-delete-btn" data-delete-sched="${s.id}" aria-label="Delete">${icon("trash-2")}</button>
+
+      <div class="tasks-list-card" style="margin-top:16px">
+        <div class="tasks-toolbar">
+          <div class="tasks-filter-pills">
+            ${["all", "active", "disabled"]
+              .map((f) => `<button type="button" class="tasks-filter-pill${state.scheduler.filter === f ? " active" : ""}" data-sched-filter="${f}">${capitalize(f)}</button>`)
+              .join("")}
           </div>
-        `,
-                )
-                .join("")
-            : `<div class="card-empty">No automations yet.</div>`
-        }
+          <button type="button" class="btn-primary" id="sched-new-btn" style="margin-left:auto">${icon("plus")} New automation</button>
+        </div>
+
+        <div class="tasks-list-head-row">
+          <div class="tasks-col-status">Status</div>
+          <div class="tasks-col-goal">Automation / Label</div>
+          <div class="tasks-col-agent">Assigned Agent</div>
+          <div class="tasks-col-time">Recurrence & Time</div>
+          <div class="tasks-col-action" style="width:70px;justify-content:flex-end">Actions</div>
+        </div>
+
+        <div class="tasks-items-list">
+          ${
+            schedules.length
+              ? schedules
+                  .map(
+                    (s) => `
+              <div class="task-list-row sched-row">
+                <div class="tasks-col-status">
+                  <button type="button" class="chip-toggle ${s.enabled ? "on" : ""}" data-toggle-sched="${s.id}" style="font-size:10.5px;padding:3px 8px">${s.enabled ? "Active" : "Off"}</button>
+                </div>
+                <div class="tasks-col-goal">
+                  <span class="task-row-goal-text">${escapeHtml(s.label)}</span>
+                  ${s.goal ? `<span class="task-row-summary-text">${escapeHtml(s.goal)}</span>` : ""}
+                </div>
+                <div class="tasks-col-agent">
+                  <span class="task-agent-badge" style="--badge-color:${deptColor(s.agentKey)}">
+                    <span class="task-agent-dot"></span>
+                    ${escapeHtml(deptLabel(s.agentKey))}
+                  </span>
+                </div>
+                <div class="tasks-col-time">
+                  <span class="task-time-text">${recurrenceSummary(s.recurrence)} · ${escapeHtml(s.time)}</span>
+                </div>
+                <div class="tasks-col-action" style="width:70px;gap:6px;justify-content:flex-end">
+                  <button type="button" class="row-icon-btn" data-edit-sched="${s.id}" aria-label="Edit">${icon("pencil")}</button>
+                  <button type="button" class="row-icon-btn row-delete-btn" data-delete-sched="${s.id}" aria-label="Delete">${icon("trash-2")}</button>
+                </div>
+              </div>
+            `,
+                  )
+                  .join("")
+              : `
+              <div class="tasks-empty-state">
+                <div class="tasks-empty-icon">${icon("calendar")}</div>
+                <div class="tasks-empty-title">No automations found</div>
+                <p class="tasks-empty-text">Create a recurring task or cron job to run workflows automatically.</p>
+              </div>
+            `
+          }
+        </div>
       </div>
     </div>
   `;
@@ -132,7 +184,7 @@ function renderSchedulerGrid() {
 
   return `
     <div class="cal-layout">
-      <div class="card cal-grid-card">
+      <div class="tasks-list-card cal-grid-card" style="padding:16px">
         <div class="cal-grid-head">
           <button type="button" id="sched-prev-month">${icon("chevron-left")}</button>
           <span>${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
@@ -141,17 +193,25 @@ function renderSchedulerGrid() {
         <div class="cal-grid-weekdays">${["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => `<span>${d}</span>`).join("")}</div>
         <div class="cal-grid">${cells.join("")}</div>
       </div>
-      <div class="card cal-day-card">
-        <div class="card-head"><span class="card-title">${selected ? formatDate(selected) : "Pick a day"}</span></div>
-        ${
-          selected
-            ? selectedItems.length
-              ? selectedItems
-                  .map((s) => `<div class="stub-list-row"><span class="agent-dot" style="background:${deptColor(s.agentKey)}"></span><span class="stub-list-title">${escapeHtml(s.label)}</span><span class="stub-list-meta">${escapeHtml(s.time)}</span></div>`)
-                  .join("")
-              : `<div class="card-empty">Nothing scheduled this day.</div>`
-            : `<div class="card-empty">Click a date to see what's scheduled.</div>`
-        }
+      <div class="tasks-list-card cal-day-card" style="padding:16px">
+        <div class="card-head" style="margin-bottom:12px"><span class="card-title" style="font-size:14px;font-weight:700">${selected ? formatDate(selected) : "Pick a day"}</span></div>
+        <div class="tasks-items-list">
+          ${
+            selected
+              ? selectedItems.length
+                ? selectedItems
+                    .map((s) => `
+                    <div class="task-list-row" style="padding:10px 12px">
+                      <span class="agent-dot" style="background:${deptColor(s.agentKey)};margin-right:8px"></span>
+                      <span class="task-row-goal-text" style="flex:1">${escapeHtml(s.label)}</span>
+                      <span class="task-time-text">${escapeHtml(s.time)}</span>
+                    </div>
+                  `)
+                    .join("")
+                : `<div class="card-empty">Nothing scheduled this day.</div>`
+              : `<div class="card-empty">Click a date to see what's scheduled.</div>`
+          }
+        </div>
       </div>
     </div>
   `;

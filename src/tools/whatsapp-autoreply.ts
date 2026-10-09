@@ -9,6 +9,22 @@ import {
   type LeadRecord,
 } from "../crm.js";
 import { getDataDir } from "../paths.js";
+import { appendAudit, checkOutbound } from "../guardrails.js";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+/**
+ * Checks Meta's X-Hub-Signature-256 header ("sha256=" + hex HMAC-SHA256 of
+ * the raw request body, keyed with the app secret). Without it anyone who
+ * knows the callback URL could forge inbound messages and make the org's
+ * number send AI replies to any phone number. Fails closed: no secret or no
+ * raw body means invalid.
+ */
+export function verifyWhatsappSignature(rawBody: Buffer | undefined, header: string | undefined, appSecret: string | undefined): boolean {
+  if (!appSecret || !rawBody || !header?.startsWith("sha256=")) return false;
+  const expected = Buffer.from(createHmac("sha256", appSecret).update(rawBody).digest("hex"));
+  const actual = Buffer.from(header.slice("sha256=".length).toLowerCase());
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
 import { getEnvValue } from "../server/settings.js";
 import { sendGmailEmail } from "./gmail.js";
 import { sendWhatsappText } from "./whatsapp.js";
@@ -474,10 +490,20 @@ export async function handleIncomingWhatsappMessage(
   const prefix = options.messageId ? `Inbound WhatsApp (${options.messageId})` : "Inbound WhatsApp";
   addActivity(lead, `${prefix}: ${text}`);
 
+  // Auto-replies send from the org's number without any agent tool call, so
+  // they'd otherwise bypass the outbound kill switch and daily cap. Checked
+  // before generating the reply so a blocked message costs no LLM spend.
+  const verdict = checkOutbound("whatsapp_auto_reply", { to: from });
+  if (!verdict.ok) {
+    addActivity(lead, `WhatsApp auto-reply skipped: ${verdict.message}`);
+    return;
+  }
+
   try {
     const knowledge = await loadKnowledge();
     const agentReply = await generateAgentReply(text, knowledge);
     const result = await sendWhatsappText(from, agentReply.reply);
+    appendAudit({ tool: "whatsapp_auto_reply", outcome: result.ok ? "allowed" : "failed", reason: result.ok ? undefined : result.error, args: { to: from } });
     if (!result.ok) {
       console.error(`[whatsapp-autoreply] failed to reply to ${from}: ${result.error}`);
       addActivity(lead, `WhatsApp reply failed: ${result.error}`);

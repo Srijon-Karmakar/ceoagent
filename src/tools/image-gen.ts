@@ -3,16 +3,18 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join, extname } from "node:path";
-import { uploadMediaToZernio } from "./zernio.js";
+import { uploadMediaToZernio, isZernioConnected } from "./zernio.js";
+import { generateHiggsfieldImage, isHiggsfieldConfigured, type HiggsfieldAspect } from "./higgsfield.js";
 import { getPostImagesDir } from "./post-images.js";
 import { getEnvValue } from "../server/settings.js";
 import { defineTool } from "../providers/toolAdapter.js";
 
 type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
 
-type ImageProviderName = "openai" | "huggingface" | "pollinations";
+type ImageProviderName = "higgsfield" | "openai" | "huggingface" | "pollinations";
 
 const PROVIDER_LABELS: Record<ImageProviderName, string> = {
+  higgsfield: "Higgsfield",
   openai: "OpenAI (gpt-image-1)",
   huggingface: "Hugging Face (FLUX.1-schnell)",
   pollinations: "Pollinations (free, no API key)",
@@ -21,6 +23,8 @@ const PROVIDER_LABELS: Record<ImageProviderName, string> = {
 interface GeneratedImage {
   buffer: Buffer;
   contentType: string;
+  /** Already-public URL, when the provider hosts the result itself (Higgsfield). */
+  hostedUrl?: string;
 }
 
 function parseSize(size: ImageSize): { width: number; height: number } {
@@ -33,7 +37,23 @@ function parseSize(size: ImageSize): { width: number; height: number } {
  * Generation itself always works regardless, via the Pollinations fallback
  * below, which needs no configuration at all. */
 export function isImageGenConfigured(): boolean {
-  return !!getEnvValue("OPENAI_API_KEY") || !!getEnvValue("HUGGINGFACE_API_KEY");
+  return isHiggsfieldConfigured() || !!getEnvValue("OPENAI_API_KEY") || !!getEnvValue("HUGGINGFACE_API_KEY");
+}
+
+/** Whether the image tools can be offered at all: they need somewhere to host the preview — Zernio, or Higgsfield's own hosted URL. */
+export function isImageGenAvailable(): boolean {
+  return isZernioConnected() || isHiggsfieldConfigured();
+}
+
+const HIGGSFIELD_ASPECT: Record<ImageSize, HiggsfieldAspect> = {
+  "1024x1024": "1:1",
+  "1536x1024": "3:2",
+  "1024x1536": "2:3",
+};
+
+async function generateViaHiggsfield(prompt: string, size: ImageSize): Promise<GeneratedImage> {
+  const image = await generateHiggsfieldImage(prompt, HIGGSFIELD_ASPECT[size]);
+  return { buffer: image.buffer, contentType: image.contentType, hostedUrl: image.url };
 }
 
 const OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations";
@@ -105,13 +125,14 @@ const PROVIDERS: {
   configured: () => boolean;
   generate: (prompt: string, size: ImageSize) => Promise<GeneratedImage>;
 }[] = [
+  { name: "higgsfield", configured: isHiggsfieldConfigured, generate: generateViaHiggsfield },
   { name: "openai", configured: () => !!getEnvValue("OPENAI_API_KEY"), generate: generateViaOpenAI },
   { name: "huggingface", configured: () => !!getEnvValue("HUGGINGFACE_API_KEY"), generate: generateViaHuggingFace },
   { name: "pollinations", configured: () => true, generate: generateViaPollinations },
 ];
 
 /**
- * Tries each configured provider in order — OpenAI, then Hugging Face, then
+ * Tries each configured provider in order — Higgsfield, OpenAI, Hugging Face, then
  * Pollinations — falling through on ANY failure from one provider to the
  * next: no key set, out of credit/quota, rate-limited, a cold-starting free
  * model, whatever. Pollinations needs no key at all, so this only fails if
@@ -153,7 +174,7 @@ function sanitizeFilename(name: string, contentType: string): string {
 
 const generateImageToolDef = defineTool(
   "generate_image",
-  "Generate an image from a text prompt and upload it for preview. Automatically tries OpenAI first if configured, then Hugging Face, then falls back to a free no-key provider (Pollinations) — so this always works even with no API key configured or when a paid provider is out of credit/quota. Returns a public URL — show it to the user and get explicit approval before passing it to create_zernio_post as a media entry ({url, type: \"image\"}) or to create_postiz_post as an imageUrls entry; this tool only generates, it never posts.",
+  "Generate an image from a text prompt and upload it for preview. Automatically tries Higgsfield first if configured, then OpenAI, then Hugging Face, then falls back to a free no-key provider (Pollinations) — so this always works even with no API key configured or when a paid provider is out of credit/quota. Returns a public URL — show it to the user and get explicit approval before passing it to create_zernio_post as a media entry ({url, type: \"image\"}) or to create_postiz_post as an imageUrls entry; this tool only generates, it never posts.",
   {
     prompt: z.string().describe("Description of the image to generate"),
     size: z.enum(["1024x1024", "1536x1024", "1024x1536"]).default("1024x1024").describe("1024x1024 square, 1536x1024 landscape, 1024x1536 portrait"),
@@ -168,7 +189,10 @@ const generateImageToolDef = defineTool(
 
     try {
       const filename = sanitizeFilename(`generated-${randomUUID()}`, image.contentType);
-      const publicUrl = await uploadMediaToZernio(image.buffer, filename, image.contentType);
+      // Without Zernio there's nowhere to upload — Higgsfield's own hosted
+      // URL (kept >= 7 days) serves as the preview instead.
+      const publicUrl =
+        !isZernioConnected() && image.hostedUrl ? image.hostedUrl : await uploadMediaToZernio(image.buffer, filename, image.contentType);
       return {
         content: [
           {
@@ -185,7 +209,7 @@ const generateImageToolDef = defineTool(
 
 const generatePostImageDef = defineTool(
   "generate_post_image",
-  "Generate an image from a text prompt and save it directly into the local post-images drop folder — for bulk-generating images ahead of scheduled/automated posting, skipping the preview-URL approval step generate_image uses. Automatically tries OpenAI first if configured, then Hugging Face, then falls back to a free no-key provider (Pollinations). Call once per image (e.g. 4 times for 4 images, with distinct filenames). After generating, use list_post_images to confirm and post_folder_image (immediately, or via a scheduled automation) to actually publish each one.",
+  "Generate an image from a text prompt and save it directly into the local post-images drop folder — for bulk-generating images ahead of scheduled/automated posting, skipping the preview-URL approval step generate_image uses. Automatically tries Higgsfield first if configured, then OpenAI, then Hugging Face, then falls back to a free no-key provider (Pollinations). Call once per image (e.g. 4 times for 4 images, with distinct filenames). After generating, use list_post_images to confirm and post_folder_image (immediately, or via a scheduled automation) to actually publish each one.",
   {
     prompt: z.string().describe("Description of the image to generate"),
     size: z.enum(["1024x1024", "1536x1024", "1024x1536"]).default("1024x1024").describe("1024x1024 square, 1536x1024 landscape, 1024x1536 portrait"),
@@ -228,6 +252,6 @@ export const imageGenServer = createSdkMcpServer({
   name: "image_gen",
   version: "1.0.0",
   instructions:
-    "Tools for generating AI images: generate_image for a single preview-and-approve flow, generate_post_image to save straight into the post-images folder for bulk/scheduled posting. Both automatically fall back across OpenAI -> Hugging Face -> Pollinations depending on what's configured and working, always succeeding via the free Pollinations tier at worst.",
+    "Tools for generating AI images: generate_image for a single preview-and-approve flow, generate_post_image to save straight into the post-images folder for bulk/scheduled posting. Both automatically fall back across Higgsfield -> OpenAI -> Hugging Face -> Pollinations depending on what's configured and working, always succeeding via the free Pollinations tier at worst.",
   tools: IMAGE_GEN_TOOL_DEFS.map((d) => tool(d.name, d.description, d.shape, d.handler)),
 });

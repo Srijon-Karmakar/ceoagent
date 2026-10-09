@@ -13,7 +13,8 @@ import { CANVA_TOOLS, isCanvaConnected } from "./tools/canva.js";
 import { WHATSAPP_TOOLS, isWhatsappConnected } from "./tools/whatsapp.js";
 import { INSTAGRAM_TOOLS, isInstagramConnected } from "./tools/instagram.js";
 import { N8N_TOOLS, isN8nConnected } from "./tools/n8n.js";
-import { IMAGE_GEN_TOOLS } from "./tools/image-gen.js";
+import { IMAGE_GEN_TOOLS, isImageGenAvailable } from "./tools/image-gen.js";
+import { VIDEO_GEN_TOOLS, isHiggsfieldConfigured } from "./tools/higgsfield.js";
 import { POST_IMAGES_TOOLS } from "./tools/post-images.js";
 import { SCHEDULER_TOOLS } from "./tools/scheduler.js";
 import { REDDIT_TOOLS, isRedditConnected } from "./tools/reddit.js";
@@ -35,6 +36,7 @@ import {
 } from "./tools/portfolio.js";
 import { MEMORY_READ_TOOLS, MEMORY_AGENT_TOOLS } from "./tools/memory.js";
 import { DEVELOPER_INFO_BLOCK } from "./developer/index.js";
+import { withShellPolicy } from "./agentSandbox.js";
 
 export interface DepartmentMeta {
   key: string;
@@ -175,6 +177,7 @@ When given a task:
 3. If it involves a LinkedIn Company Page update and LinkedIn tools are available, describe the draft post back to the user first — never publish without being explicitly told to, since posting is immediate and public. After publishing, verify with list_organization_posts before reporting it as posted; if you can't find it there, report the post as unconfirmed rather than done.
 4. If Zernio tools are available (multi-platform posting/DMs), use list_zernio_accounts to see what's connected before drafting for a specific platform, and describe the draft back to the user first — never post or send a message without being explicitly told to. Instagram in particular has no text-only post type — it always needs an image, sourced via step 4a or 4b below. create_zernio_post's result includes a post id and status — quote them; if that result comes back empty or without an id, report the post as unconfirmed, don't assume it went through.
 4a. If generate_image is available and the user wants an AI-generated image, call it, then show the returned preview URL and get explicit approval before using it as a media entry in create_zernio_post (type: "image", or type: "video" for a video/Reel) or in create_postiz_post's imageUrls.
+4a-video. If generate_video is available and the user wants an AI video or Reel, call it (text-to-video, or pass image_url to animate an image — e.g. one from generate_image). It takes a few minutes. Show the returned video URL and get explicit approval before using it in create_zernio_post as a media entry (type: "video"). Log it on the playbook as type video, or reel for short vertical video.
 4b. If list_post_images/post_folder_image are available and the user wants to post an image they've supplied themselves, call list_post_images to see what's in the current organization's drop folder, confirm the filename and caption with the user, and only call post_folder_image once they've explicitly told you to post it.
 4b-batch. If generate_post_image is available and the request is to generate multiple images for later/scheduled posting (e.g. "generate N images for X and schedule them"), call it once per image with a distinct, descriptive filename (e.g. "promo-1.png".."promo-4.png") — this saves straight into the drop folder, skipping the preview-approval step, since these still need an explicit post_folder_image (or a scheduled automation calling it) before anything actually publishes. List the saved filenames back in your reply so a scheduling step (e.g. via the Calendar agent) can reference them.
 4c. If Postiz tools are available, use list_postiz_integrations to see what's connected before drafting for a specific platform, and describe the draft back to the user first — never post without being explicitly told to. If both Zernio and Postiz have the same platform connected, ask which one to use rather than guessing. create_postiz_post's result includes post id(s) — quote them; if that result comes back empty or without an id, report the post as unconfirmed, don't assume it went through.
@@ -185,24 +188,29 @@ When given a task:
 7. Log every real deliverable you produced (a draft, image, carousel, video, reel, or post) on the Sales playbook via create_sales_playbook_item, with the type, platform, and a link if it has one — set done: true only once it's actually confirmed sent/posted, not just drafted. Use type carousel for a multi-image/multi-slide post and reel for short-form vertical video, distinct from plain image/video, so the playbook reflects what was actually posted. This is what the dashboard's Sales playbook tab shows, so skipping it means the deliverable is invisible there even though you made it.
 7a. If the deliverable is tied to a specific product/project (e.g. a collab pitch or an outreach email for a named product), also log it on the Portfolio: call list_portfolio_projects first and only log via create_sales_portfolio_entry if a matching project already exists — don't create one yourself. Category is whichever of blog/article/collab/pr-post/email actually fits.
 8. Reply with a short, honest summary of what you produced (flagging anything unconfirmed as such, not as done) and any information you'd need from the CEO to make it more specific (e.g. target customer, pricing, differentiators).`,
-  tools: [
-    docTool("sales"),
-    ...PLAYBOOK_SALES_TOOLS,
-    ...PORTFOLIO_SALES_TOOLS,
-    ...MEMORY_READ_TOOLS,
-    ...CRM_OUTREACH_TOOLS,
-    ...(isGmailConnected() ? GMAIL_TOOLS : []),
-    ...(isSesConnected() ? SES_TOOLS : []),
-    ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
-    ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
-    ...(isZernioConnected() ? ZERNIO_TOOLS : []),
-    ...(isPostizConnected() ? POSTIZ_TOOLS : []),
-    ...(isInstagramConnected() ? INSTAGRAM_TOOLS : []),
-    ...(isWhatsappConnected() ? WHATSAPP_TOOLS : []),
-    ...(isZernioConnected() ? IMAGE_GEN_TOOLS : []),
-    ...(isZernioConnected() ? POST_IMAGES_TOOLS : []),
-    ...(isCanvaConnected() ? CANVA_TOOLS : []),
-  ],
+  // A getter, not a fixed array: which integrations are connected depends
+  // on the org running this agent, so it's re-evaluated per run (see buildAgentsRegistry).
+  get tools() {
+    return [
+      docTool("sales"),
+      ...PLAYBOOK_SALES_TOOLS,
+      ...PORTFOLIO_SALES_TOOLS,
+      ...MEMORY_READ_TOOLS,
+      ...CRM_OUTREACH_TOOLS,
+      ...(isGmailConnected() ? GMAIL_TOOLS : []),
+      ...(isSesConnected() ? SES_TOOLS : []),
+      ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
+      ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
+      ...(isZernioConnected() ? ZERNIO_TOOLS : []),
+      ...(isPostizConnected() ? POSTIZ_TOOLS : []),
+      ...(isInstagramConnected() ? INSTAGRAM_TOOLS : []),
+      ...(isWhatsappConnected() ? WHATSAPP_TOOLS : []),
+      ...(isImageGenAvailable() ? IMAGE_GEN_TOOLS : []),
+      ...(isHiggsfieldConfigured() ? VIDEO_GEN_TOOLS : []),
+      ...(isZernioConnected() ? POST_IMAGES_TOOLS : []),
+      ...(isCanvaConnected() ? CANVA_TOOLS : []),
+    ];
+  },
   ...SYNC,
 };
 
@@ -218,21 +226,25 @@ When given a task:
 4. If it involves emailing, messaging, or DMing a lead and the relevant tool is available, draft it — never send without being explicitly told to. After any send, quote the real message id from the tool's result; if it's missing, report the send as unconfirmed rather than successful, and log the outcome via log_lead_activity either way.
 5. If create_crm_document is useful (e.g. a pipeline summary or a written prospecting brief), use it — but the CRM's real data lives in the lead records themselves, not in documents.
 6. Reply with a concise summary: how many leads you added/updated (with ids), the pipeline stages you moved, and anything unconfirmed flagged honestly.`,
-  tools: [
-    ...CRM_TOOLS,
-    docTool("crm"),
-    ...PORTFOLIO_CRM_TOOLS,
-    ...MEMORY_READ_TOOLS,
-    "WebSearch",
-    "WebFetch",
-    ...(isGmailConnected() ? GMAIL_TOOLS : []),
-    ...(isSesConnected() ? SES_TOOLS : []),
-    ...(isInstagramConnected() ? INSTAGRAM_TOOLS : []),
-    ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
-    ...(isWhatsappConnected() ? WHATSAPP_TOOLS : []),
-    ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : []),
-    ...(isHunterConnected() ? HUNTER_TOOLS : []),
-  ],
+  // A getter, not a fixed array: which integrations are connected depends
+  // on the org running this agent, so it's re-evaluated per run (see buildAgentsRegistry).
+  get tools() {
+    return [
+      ...CRM_TOOLS,
+      docTool("crm"),
+      ...PORTFOLIO_CRM_TOOLS,
+      ...MEMORY_READ_TOOLS,
+      "WebSearch",
+      "WebFetch",
+      ...(isGmailConnected() ? GMAIL_TOOLS : []),
+      ...(isSesConnected() ? SES_TOOLS : []),
+      ...(isInstagramConnected() ? INSTAGRAM_TOOLS : []),
+      ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
+      ...(isWhatsappConnected() ? WHATSAPP_TOOLS : []),
+      ...(isScrapegraphConnected() ? SCRAPEGRAPH_TOOLS : []),
+      ...(isHunterConnected() ? HUNTER_TOOLS : []),
+    ];
+  },
   ...SYNC,
 };
 
@@ -337,23 +349,28 @@ When given a task:
 8. Log every real deliverable you produced (a press release, pitch, or post) on the Marketing playbook via create_pr_playbook_item, with the type, platform, and a link if it has one — set done: true only once it's actually confirmed sent/published, not just drafted.
 8a. If it's tied to a specific product/project, also log it on the Portfolio (category "pr-post", or "collab" for a joint announcement) via create_pr_portfolio_entry — call list_portfolio_projects first and only log against a project that already exists.
 9. Reply with a short, honest summary of what you produced (flagging anything unconfirmed as such, not as done) and any open questions (e.g. embargo timing, spokesperson quotes, approval needed before this goes out).`,
-  tools: [
-    docTool("pr"),
-    ...PLAYBOOK_PR_TOOLS,
-    ...PORTFOLIO_PR_TOOLS,
-    ...MEMORY_READ_TOOLS,
-    "WebSearch",
-    "WebFetch",
-    ...(isGmailConnected() ? GMAIL_TOOLS : []),
-    ...(isSesConnected() ? SES_TOOLS : []),
-    ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
-    ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
-    ...(isZernioConnected() ? ZERNIO_TOOLS : []),
-    ...(isPostizConnected() ? POSTIZ_TOOLS : []),
-    ...(isZernioConnected() ? IMAGE_GEN_TOOLS : []),
-    ...(isZernioConnected() ? POST_IMAGES_TOOLS : []),
-    ...(isCanvaConnected() ? CANVA_TOOLS : []),
-  ],
+  // A getter, not a fixed array: which integrations are connected depends
+  // on the org running this agent, so it's re-evaluated per run (see buildAgentsRegistry).
+  get tools() {
+    return [
+      docTool("pr"),
+      ...PLAYBOOK_PR_TOOLS,
+      ...PORTFOLIO_PR_TOOLS,
+      ...MEMORY_READ_TOOLS,
+      "WebSearch",
+      "WebFetch",
+      ...(isGmailConnected() ? GMAIL_TOOLS : []),
+      ...(isSesConnected() ? SES_TOOLS : []),
+      ...(isLinkedinConnected() ? LINKEDIN_TOOLS : []),
+      ...(isFacebookConnected() ? FACEBOOK_TOOLS : []),
+      ...(isZernioConnected() ? ZERNIO_TOOLS : []),
+      ...(isPostizConnected() ? POSTIZ_TOOLS : []),
+      ...(isImageGenAvailable() ? IMAGE_GEN_TOOLS : []),
+      ...(isHiggsfieldConfigured() ? VIDEO_GEN_TOOLS : []),
+      ...(isZernioConnected() ? POST_IMAGES_TOOLS : []),
+      ...(isCanvaConnected() ? CANVA_TOOLS : []),
+    ];
+  },
   ...SYNC,
 };
 
@@ -415,7 +432,12 @@ export function buildAgentsRegistry(): Record<string, AgentDefinition> {
   };
   const registry: Record<string, AgentDefinition> = {};
   for (const [key, agent] of Object.entries(base)) {
-    registry[key] = { ...agent, prompt: `${agent.prompt}\n\n${DEVELOPER_INFO_BLOCK}` };
+    const tools = agent.tools ? withShellPolicy(agent.tools) : agent.tools;
+    const shellNote =
+      agent.tools?.includes("Bash") && !tools?.includes("Bash")
+        ? "\n\nShell commands are disabled on this server: you can read, write and edit files in your workspace, but not run commands. If a task needs a command run (build, install, tests), write the files and tell the user which commands to run themselves."
+        : "";
+    registry[key] = { ...agent, tools, prompt: `${agent.prompt}${shellNote}\n\n${DEVELOPER_INFO_BLOCK}` };
   }
   return registry;
 }

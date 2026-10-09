@@ -1,7 +1,19 @@
 node_modules/
 dist/
-data/
-workspace/
 release/
+
+# Secrets. Note: the local .env.example holds real keys, so it stays ignored too.
 .env
-.env.example
+.env.*
+
+# Runtime / tenant data: every org's tokens, settings (API keys) and run history
+data/
+orgs/
+workspace/
+deliverables/
+
+# Local scratch, logs, browser profiles from UI checks
+.tmp/
+scratch/
+*.log
+~$*

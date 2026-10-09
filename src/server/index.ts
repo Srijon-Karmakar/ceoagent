@@ -130,7 +130,7 @@ import { getToolsCatalog } from "./toolsCatalog.js";
 import { isImageGenConfigured } from "../tools/image-gen.js";
 import { getPostImagesDir } from "../tools/post-images.js";
 import { isWhatsappConnected } from "../tools/whatsapp.js";
-import { isWhatsappWebhookConfigured, markMessageSeen, handleIncomingWhatsappMessage } from "../tools/whatsapp-autoreply.js";
+import { isWhatsappWebhookConfigured, markMessageSeen, handleIncomingWhatsappMessage, verifyWhatsappSignature } from "../tools/whatsapp-autoreply.js";
 import { isRedditConnected } from "../tools/reddit.js";
 import { filesRouter } from "./filesRoutes.js";
 import {
@@ -146,6 +146,7 @@ import {
   deleteRun,
   cancelRun,
   subscribe,
+  flushRunStores,
 } from "./store.js";
 
 // Packaged installs ship with no .env file — this fills process.env from the
@@ -171,6 +172,7 @@ function monitorElectronParent() {
       process.kill(parentPid, 0);
     } catch {
       clearInterval(timer);
+      flushRunStores();
       closeStorage().finally(() => process.exit(0));
     }
   }, 5000);
@@ -212,7 +214,16 @@ app.post(["/api/runs", "/api/agents/:key/runs", "/api/automation/runs", "/api/au
 // Generous headroom for bulk attachments: each parsed file caps at 50,000
 // chars (see attachments.ts's MAX_CHARS) and JSON-escaping can inflate that
 // somewhat, so a handful of files easily blew past the old 256kb default.
-app.use(express.json({ limit: "8mb" }));
+app.use(
+  express.json({
+    limit: "8mb",
+    // Webhook signatures (WhatsApp's X-Hub-Signature-256) are computed over
+    // the exact bytes sent, which re-serializing req.body wouldn't reproduce.
+    verify: (req, _res, buf) => {
+      if ((req as express.Request).originalUrl?.startsWith("/webhook/")) (req as express.Request).rawBody = buf;
+    },
+  }),
+);
 // The preview dashboard (/preview) is actively being iterated on in place —
 // files change under the same URL from one minute to the next, and the
 // browser treating that as cacheable has already caused a "my changes
@@ -1418,9 +1429,17 @@ app.get("/api/tools", (_req, res) => {
   res.json(getToolsCatalog());
 });
 
-// WhatsApp Cloud API webhook — Meta's one-time verification handshake when
-// you set the callback URL in the App Dashboard.
+// WhatsApp Cloud API webhook — inbound messages. Unsigned or mis-signed
+// requests are rejected (see verifyWhatsappSignature); with no
+// WHATSAPP_APP_SECRET configured, inbound messages are ignored.
 function handleWhatsappMessages(req: express.Request, res: express.Response) {
+  if (!verifyWhatsappSignature(req.rawBody, req.header("x-hub-signature-256"), getEnvValue("WHATSAPP_APP_SECRET"))) {
+    if (!getEnvValue("WHATSAPP_APP_SECRET")) {
+      console.warn("[webhook/whatsapp] WHATSAPP_APP_SECRET is not set — ignoring inbound message (set it in Settings to enable auto-reply).");
+    }
+    res.sendStatus(401);
+    return;
+  }
   res.sendStatus(200);
   if (!isWhatsappConnected() || !isWhatsappWebhookConfigured()) return;
   const entries = req.body?.entry ?? [];
@@ -1468,6 +1487,17 @@ app.post("/webhook/whatsapp/:organizationId", (req, res) => {
     return;
   }
   runWithTenant(tenant, () => handleWhatsappMessages(req, res));
+});
+
+// The un-scoped /webhook/whatsapp routes run on the server-wide credentials,
+// which only makes sense for a single-tenant install. With Supabase auth on,
+// each org must use its own /webhook/whatsapp/:organizationId URL.
+app.use("/webhook/whatsapp", (req, res, next) => {
+  if (req.path === "/" && isSupabaseAuthConfigured()) {
+    res.sendStatus(404);
+    return;
+  }
+  next();
 });
 
 app.get("/webhook/whatsapp", (req, res) => {
@@ -1544,7 +1574,7 @@ app.get("/auth/gmail", async (req, res) => {
     const url = await runInAuthFlowTenant(req, () => getGmailAuthUrl(stateParam(req)));
     res.redirect(url);
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err));
+    res.status(500).type("text/plain").send(err instanceof Error ? err.message : String(err));
   }
 });
 
@@ -1555,7 +1585,7 @@ app.get("/auth/gmail/callback", async (req, res) => {
     await runInAuthFlowTenant(req, () => handleGmailCallback(code));
     res.send(oauthSuccessPage("Gmail"));
   } catch (err) {
-    res.status(500).send(`Gmail connection failed: ${err instanceof Error ? err.message : String(err)}`);
+    res.status(500).type("text/plain").send(`Gmail connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -1569,7 +1599,7 @@ app.get("/auth/instagram", async (req, res) => {
     const url = await runInAuthFlowTenant(req, () => getInstagramAuthUrl(stateParam(req)));
     res.redirect(url);
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err));
+    res.status(500).type("text/plain").send(err instanceof Error ? err.message : String(err));
   }
 });
 
@@ -1580,7 +1610,7 @@ app.get("/auth/instagram/callback", async (req, res) => {
     await runInAuthFlowTenant(req, () => handleInstagramCallback(code));
     res.send(oauthSuccessPage("Instagram"));
   } catch (err) {
-    res.status(500).send(`Instagram connection failed: ${err instanceof Error ? err.message : String(err)}`);
+    res.status(500).type("text/plain").send(`Instagram connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -1594,7 +1624,7 @@ app.get("/auth/linkedin", async (req, res) => {
     const url = await runInAuthFlowTenant(req, () => getLinkedinAuthUrl(stateParam(req)));
     res.redirect(url);
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err));
+    res.status(500).type("text/plain").send(err instanceof Error ? err.message : String(err));
   }
 });
 
@@ -1613,7 +1643,7 @@ app.get("/auth/linkedin/callback", async (req, res) => {
     await runInAuthFlowTenant(req, () => handleLinkedinCallback(code));
     res.send(oauthSuccessPage("LinkedIn"));
   } catch (err) {
-    res.status(500).send(`LinkedIn connection failed: ${err instanceof Error ? err.message : String(err)}`);
+    res.status(500).type("text/plain").send(`LinkedIn connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -1627,7 +1657,7 @@ app.get("/auth/facebook", async (req, res) => {
     const url = await runInAuthFlowTenant(req, () => getFacebookAuthUrl(stateParam(req)));
     res.redirect(url);
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err));
+    res.status(500).type("text/plain").send(err instanceof Error ? err.message : String(err));
   }
 });
 
@@ -1641,7 +1671,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
     await runInAuthFlowTenant(req, () => handleFacebookCallback(code));
     res.send(oauthSuccessPage("Facebook"));
   } catch (err) {
-    res.status(500).send(`Facebook connection failed: ${err instanceof Error ? err.message : String(err)}`);
+    res.status(500).type("text/plain").send(`Facebook connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -1655,7 +1685,7 @@ app.get("/auth/canva", async (req, res) => {
     const url = await runInAuthFlowTenant(req, () => getCanvaAuthUrl(stateParam(req)));
     res.redirect(url);
   } catch (err) {
-    res.status(500).send(err instanceof Error ? err.message : String(err));
+    res.status(500).type("text/plain").send(err instanceof Error ? err.message : String(err));
   }
 });
 
@@ -1669,7 +1699,7 @@ app.get("/auth/canva/callback", async (req, res) => {
     await runInAuthFlowTenant(req, () => handleCanvaCallback(code));
     res.send(oauthSuccessPage("Canva"));
   } catch (err) {
-    res.status(500).send(`Canva connection failed: ${err instanceof Error ? err.message : String(err)}`);
+    res.status(500).type("text/plain").send(`Canva connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -1711,6 +1741,7 @@ function hookGracefulShutdown(server: import("node:http").Server) {
     server.close();
     const force = setTimeout(() => process.exit(1), 10_000);
     force.unref();
+    flushRunStores();
     closeStorage()
       .catch((err) => console.error("[server] storage flush failed during shutdown:", err))
       .finally(() => process.exit(0));

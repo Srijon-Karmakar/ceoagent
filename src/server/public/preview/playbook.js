@@ -40,6 +40,94 @@ function ymd(d) {
   return d.toISOString().slice(0, 10);
 }
 
+const DEFAULT_PLAYBOOK_PREVIEW = [
+  {
+    id: "pb-1",
+    tab: "sales",
+    type: "email-script",
+    platform: "Gmail / Apollo",
+    details: "3-step outbound sequence targeting technical co-founders with ROI case studies and meeting CTAs.",
+    notes: "A/B test subject lines with personalized token references.",
+    owner: "agent",
+    agentKey: "sales",
+    done: true,
+    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+    updatedAt: new Date(Date.now() - 86400000).toISOString(),
+    completedAt: new Date(Date.now() - 86400000).toISOString(),
+    link: "https://docs.google.com/document/d/example1",
+  },
+  {
+    id: "pb-2",
+    tab: "sales",
+    type: "ai-generative",
+    platform: "Pitch Deck / Slides",
+    details: "Structured 12-slide problem/solution narrative highlighting autonomous multi-agent orchestration.",
+    notes: "Review financial projection assumptions on slide 9.",
+    owner: "agent",
+    agentKey: "sales",
+    done: false,
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000 * 3).toISOString(),
+    link: "https://pitch.com/example-deck",
+  },
+  {
+    id: "pb-3",
+    tab: "sales",
+    type: "email-script",
+    platform: "CRM Follow-up",
+    details: "Framework for handling common enterprise objections around data residency, security, and onboarding velocity.",
+    notes: "Approved by Head of Sales.",
+    owner: "agent",
+    agentKey: "sales",
+    done: true,
+    createdAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+    completedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+  },
+  {
+    id: "pb-4",
+    tab: "marketing",
+    type: "carousel",
+    platform: "LinkedIn",
+    details: "5-slide visual teardown: How Autonomous AI Workforces replace fragile zapier automations.",
+    notes: "Drafted with high-contrast infographics and glassmorphic badges.",
+    owner: "agent",
+    agentKey: "seo",
+    done: false,
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
+    link: "https://linkedin.com/posts/example",
+  },
+  {
+    id: "pb-5",
+    tab: "marketing",
+    type: "image",
+    platform: "Product Hunt & Twitter",
+    details: "Launch hero banner kit featuring neon string dynamics, dark frosted cards, and live metrics widgets.",
+    notes: "Exported in @2x retina WebP and PNG formats.",
+    owner: "agent",
+    agentKey: "pr",
+    done: true,
+    createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
+    updatedAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+    completedAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+    link: "https://cdn.example.com/assets/banner.png",
+  },
+  {
+    id: "pb-6",
+    tab: "marketing",
+    type: "reel",
+    platform: "X / TikTok",
+    details: "30-second live terminal & UI recording showing autonomous multi-agent task completion from a single prompt.",
+    notes: "Captioned with background synthwave track.",
+    owner: "agent",
+    agentKey: "pr",
+    done: false,
+    createdAt: new Date(Date.now() - 3600000 * 6).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000 * 6).toISOString(),
+  },
+];
+
 async function loadPlaybookItems(force) {
   if (state.playbook.loaded && !force) return;
   state.playbook.loading = true;
@@ -49,7 +137,13 @@ async function loadPlaybookItems(force) {
     state.playbook.loaded = true;
     state.playbook.error = null;
   } catch (err) {
-    state.playbook.error = err instanceof Error ? err.message : String(err);
+    if (String(err).includes("Not signed in") || String(err).includes("401")) {
+      state.playbook.items = DEFAULT_PLAYBOOK_PREVIEW;
+      state.playbook.loaded = true;
+      state.playbook.error = null;
+    } else {
+      state.playbook.error = err instanceof Error ? err.message : String(err);
+    }
   }
   state.playbook.loading = false;
   render();
@@ -66,38 +160,57 @@ VIEW_RENDERERS.playbook = function renderPlaybookPage() {
   if (state.playbook.loading && !state.playbook.loaded) return `<div class="stub-placeholder">Loading playbook…</div>`;
   if (state.playbook.error) return `<div class="stub-placeholder">Couldn't load playbook: ${escapeHtml(state.playbook.error)}</div>`;
   const items = playbookTabItems();
+  const allCount = state.playbook.items ? state.playbook.items.length : 0;
 
   return `
-    <div class="stub-page">
-      <div class="stub-head">
-        <h1 class="stub-title">Playbook</h1>
-        <p class="stub-subtitle">Deliverables your agents have shipped — toggle done, edit, or remove. New items come from the agents themselves.</p>
+    <div class="tasks-page playbook-page">
+      <div class="tasks-header">
+        <div class="tasks-header-title-col">
+          <div class="tasks-eyebrow">📖 Deliverables & Playbook</div>
+          <h1 class="tasks-title">Playbook <span class="tasks-count-pill">${allCount}</span></h1>
+          <p class="tasks-subtitle">Action items and deliverables shipped by your agents — verify, check off, or track on a schedule.</p>
+        </div>
       </div>
-      <div class="page-tabs">
-        ${PLAYBOOK_TABS.map((t) => `<button type="button" class="page-tab${state.playbook.tab === t ? " active" : ""}" data-playbook-tab="${t}">${capitalize(t)}</button>`).join("")}
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="page-tab${state.playbook.mode === "list" ? " active" : ""}" data-playbook-mode="list">${icon("list-checks")} List</button>
-        <button type="button" class="page-tab${state.playbook.mode === "calendar" ? " active" : ""}" data-playbook-mode="calendar">${icon("calendar-days")} Calendar</button>
+
+      <div class="tasks-list-card">
+        <div class="tasks-toolbar">
+          <div class="page-tabs" style="margin:0">
+            ${PLAYBOOK_TABS.map((t) => `<button type="button" class="page-tab${state.playbook.tab === t ? " active" : ""}" data-playbook-tab="${t}">${capitalize(t)}</button>`).join("")}
+          </div>
+          <div class="page-tabs" style="margin:0">
+            <button type="button" class="page-tab${state.playbook.mode === "list" ? " active" : ""}" data-playbook-mode="list">${icon("list-checks")} List</button>
+            <button type="button" class="page-tab${state.playbook.mode === "calendar" ? " active" : ""}" data-playbook-mode="calendar">${icon("calendar-days")} Calendar</button>
+          </div>
+          <div class="tasks-filter-pills" style="margin-left:auto">
+            <span class="tasks-stat-chip-label" style="font-size:11px;color:var(--text-faint);margin-right:2px">Filter:</span>
+            <button type="button" class="tasks-filter-pill${!state.playbook.typeFilter ? " active" : ""}" data-playbook-type="">All</button>
+            ${PLAYBOOK_ITEM_TYPES.map(
+              (t) =>
+                `<button type="button" class="tasks-filter-pill${state.playbook.typeFilter === t ? " active" : ""}" data-playbook-type="${t}" style="--chip-color:${PLAYBOOK_TYPE_COLORS[t]}">${PLAYBOOK_TYPE_LABELS[t]}</button>`,
+            ).join("")}
+          </div>
+        </div>
+
+        ${state.playbook.mode === "list" ? renderPlaybookList(items) : `<div style="padding:16px">${renderPlaybookCalendar()}</div>`}
       </div>
-      <div class="toolbar">
-        <span class="toolbar-label">Type:</span>
-        <button type="button" class="chip-filter${!state.playbook.typeFilter ? " active" : ""}" data-playbook-type="">All</button>
-        ${PLAYBOOK_ITEM_TYPES.map(
-          (t) =>
-            `<button type="button" class="chip-filter${state.playbook.typeFilter === t ? " active" : ""}" data-playbook-type="${t}" style="--chip-color:${PLAYBOOK_TYPE_COLORS[t]}">${PLAYBOOK_TYPE_LABELS[t]}</button>`,
-        ).join("")}
-      </div>
-      ${state.playbook.mode === "list" ? renderPlaybookList(items) : renderPlaybookCalendar()}
     </div>
   `;
 };
 
 function renderPlaybookList(items) {
-  if (!items.length) return `<div class="stub-placeholder">Nothing here yet.</div>`;
+  if (!items.length) {
+    return `
+      <div class="tasks-empty-state">
+        <div class="tasks-empty-icon">${icon("check-square")}</div>
+        <div class="tasks-empty-title">Nothing here yet</div>
+        <p class="tasks-empty-text">When agents ship strategies, social content, or campaigns, they appear here.</p>
+      </div>
+    `;
+  }
   return `
-    <div class="data-table-wrap">
+    <div class="data-table-wrap" style="border:none;border-radius:0;box-shadow:none;background:transparent">
       <table class="data-table">
-        <thead><tr><th></th><th>Type</th><th>Platform</th><th>Details</th><th>Owner</th><th>Added</th><th></th></tr></thead>
+        <thead><tr><th style="width:40px"></th><th>Type</th><th>Platform</th><th>Details</th><th>Owner</th><th>Added</th><th style="text-align:right">Actions</th></tr></thead>
         <tbody>
           ${items
             .map(
@@ -105,11 +218,11 @@ function renderPlaybookList(items) {
             <tr>
               <td><button type="button" class="task-check ${i.done ? "success" : ""}" data-toggle-playbook="${i.id}">${i.done ? icon("check") : ""}</button></td>
               <td><span class="type-pill" style="--chip-color:${PLAYBOOK_TYPE_COLORS[i.type]}">${PLAYBOOK_TYPE_LABELS[i.type] ?? i.type}</span></td>
-              <td>${escapeHtml(i.platform || "—")}</td>
-              <td class="truncate-cell">${i.link ? `<a href="${escapeHtml(i.link)}" target="_blank" rel="noopener">${escapeHtml(i.details || i.link)}</a>` : escapeHtml(i.details || "—")}</td>
+              <td style="font-weight:600">${escapeHtml(i.platform || "—")}</td>
+              <td class="truncate-cell">${i.link ? `<a href="${escapeHtml(i.link)}" target="_blank" rel="noopener" style="font-weight:600;color:var(--accent)">${escapeHtml(i.details || i.link)}</a>` : escapeHtml(i.details || "—")}</td>
               <td><span class="owner-badge ${i.owner}">${i.owner === "agent" ? deptLabel(i.agentKey) : "Manual"}</span></td>
               <td>${formatDate(i.createdAt)}</td>
-              <td class="row-actions-cell">
+              <td class="row-actions-cell" style="justify-content:flex-end">
                 <button type="button" class="row-icon-btn" data-edit-playbook="${i.id}" aria-label="Edit">${icon("pencil")}</button>
                 <button type="button" class="row-icon-btn row-delete-btn" data-delete-playbook="${i.id}" aria-label="Delete">${icon("trash-2")}</button>
               </td>
@@ -157,7 +270,7 @@ function renderPlaybookCalendar() {
 
   return `
     <div class="cal-layout">
-      <div class="card cal-grid-card">
+      <div class="tasks-list-card cal-grid-card" style="padding:16px">
         <div class="cal-grid-head">
           <button type="button" id="cal-prev-month">${icon("chevron-left")}</button>
           <span>${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
@@ -166,25 +279,27 @@ function renderPlaybookCalendar() {
         <div class="cal-grid-weekdays">${["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => `<span>${d}</span>`).join("")}</div>
         <div class="cal-grid">${cells.join("")}</div>
       </div>
-      <div class="card cal-day-card">
-        <div class="card-head"><span class="card-title">${selected ? formatDate(selected) : "Pick a day"}</span></div>
-        ${
-          selected
-            ? selectedItems.length
-              ? selectedItems
-                  .map(
-                    (i) => `
-            <div class="stub-list-row">
-              <span class="cal-dot" style="background:${PLAYBOOK_TYPE_COLORS[i.type]}"></span>
-              <span class="stub-list-title">${escapeHtml(i.details || i.platform || PLAYBOOK_TYPE_LABELS[i.type])}</span>
-              <span class="stub-list-meta">${deptLabel(i.agentKey)}</span>
-            </div>
-          `,
-                  )
-                  .join("")
-              : `<div class="card-empty">Nothing on this day.</div>`
-            : `<div class="card-empty">Click a date to see what shipped.</div>`
-        }
+      <div class="tasks-list-card cal-day-card" style="padding:16px">
+        <div class="card-head" style="margin-bottom:12px"><span class="card-title" style="font-size:14px;font-weight:700">${selected ? formatDate(selected) : "Pick a day"}</span></div>
+        <div class="tasks-items-list">
+          ${
+            selected
+              ? selectedItems.length
+                ? selectedItems
+                    .map(
+                      (i) => `
+              <div class="task-list-row" style="padding:10px 12px">
+                <span class="cal-dot" style="background:${PLAYBOOK_TYPE_COLORS[i.type]};margin-right:8px"></span>
+                <span class="task-row-goal-text" style="flex:1">${escapeHtml(i.details || i.platform || PLAYBOOK_TYPE_LABELS[i.type])}</span>
+                <span class="task-time-text">${deptLabel(i.agentKey)}</span>
+              </div>
+            `,
+                    )
+                    .join("")
+                : `<div class="card-empty">Nothing on this day.</div>`
+              : `<div class="card-empty">Click a date to see what shipped.</div>`
+          }
+        </div>
       </div>
     </div>
   `;

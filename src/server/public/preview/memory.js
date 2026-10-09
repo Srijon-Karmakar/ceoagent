@@ -17,6 +17,13 @@ state.memoryBrowse = {
   previewMode: "preview",
 };
 
+const DEFAULT_MEMORY_PREVIEW = [
+  { id: "mem-1", title: "Company ICP & Core Customer Profile", content: "Target customers are seed-to-series-B founders, technical CEOs, and solo-operators scaling B2B SaaS applications.", owner: "agent", updatedAt: new Date(Date.now() - 3600000 * 2).toISOString() },
+  { id: "mem-2", title: "Brand Voice & Tone Guidelines", content: "Concise, visionary, premium, authoritative yet accessible. Avoid corporate jargon; use direct active voice.", owner: "agent", updatedAt: new Date(Date.now() - 3600000 * 14).toISOString() },
+  { id: "mem-3", title: "Pricing Tiers & Token Allowances", content: "Starter ($49/mo, 100k tokens), Pro ($199/mo, 1M tokens), Enterprise ($999/mo, dedicated models & custom agents).", owner: "manual", updatedAt: new Date(Date.now() - 86400000 * 3).toISOString() },
+  { id: "mem-4", title: "Core Tech Stack Principles", content: "Node.js/TypeScript backend, vanilla CSS with custom design system tokens, Three.js/WebGL background animations, SQLite/PostgreSQL storage.", owner: "manual", updatedAt: new Date(Date.now() - 86400000 * 7).toISOString() },
+];
+
 async function loadMemoryEntries(force) {
   if (state.memoryBrowse.loaded && !force) return;
   state.memoryBrowse.loading = true;
@@ -26,7 +33,13 @@ async function loadMemoryEntries(force) {
     state.memoryBrowse.loaded = true;
     state.memoryBrowse.error = null;
   } catch (err) {
-    state.memoryBrowse.error = err instanceof Error ? err.message : String(err);
+    if (String(err).includes("Not signed in") || String(err).includes("401")) {
+      state.memoryBrowse.entries = DEFAULT_MEMORY_PREVIEW;
+      state.memoryBrowse.loaded = true;
+      state.memoryBrowse.error = null;
+    } else {
+      state.memoryBrowse.error = err instanceof Error ? err.message : String(err);
+    }
   }
   state.memoryBrowse.loading = false;
   render();
@@ -45,37 +58,81 @@ VIEW_RENDERERS.knowledge = function renderKnowledgePage() {
 
 function renderMemoryList() {
   const q = state.memoryBrowse.search.trim().toLowerCase();
-  const entries = state.memoryBrowse.entries.filter((e) => !q || e.title.toLowerCase().includes(q) || e.content.toLowerCase().includes(q));
+  const allEntries = state.memoryBrowse.entries || [];
+  const entries = allEntries.filter((e) => !q || e.title.toLowerCase().includes(q) || e.content.toLowerCase().includes(q));
+
   return `
-    <div class="stub-page">
-      <div class="stub-head">
-        <h1 class="stub-title">Knowledge</h1>
-        <p class="stub-subtitle">Permanent, cross-agent memory — tell any agent something once and every agent remembers it.</p>
+    <div class="tasks-page knowledge-page">
+      <div class="tasks-header">
+        <div class="tasks-header-title-col">
+          <div class="tasks-eyebrow">💡 Agent Memory</div>
+          <h1 class="tasks-title">Knowledge <span class="tasks-count-pill">${allEntries.length}</span></h1>
+          <p class="tasks-subtitle">Permanent, cross-agent memory — shared recall across your entire workforce.</p>
+        </div>
       </div>
-      <div class="toolbar">
-        <input type="text" class="toolbar-search" id="memory-search" placeholder="Search memory…" value="${escapeHtml(state.memoryBrowse.search)}" />
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="btn-primary" id="memory-add-btn">${icon("plus")} Add manually</button>
+
+      <div class="tasks-list-card">
+        <div class="tasks-toolbar">
+          <div class="tasks-search-wrap">
+            <span class="tasks-search-icon">${icon("search")}</span>
+            <input 
+              type="text" 
+              class="tasks-search-input" 
+              id="memory-search" 
+              placeholder="Search knowledge by topic or content…" 
+              value="${escapeHtml(state.memoryBrowse.search)}" 
+            />
+            ${state.memoryBrowse.search ? `<button type="button" class="tasks-search-clear" id="memory-search-clear" aria-label="Clear">${icon("x")}</button>` : ""}
+          </div>
+          <button type="button" class="btn-primary" id="memory-add-btn">${icon("plus")} Add manually</button>
+        </div>
+
+        <div class="tasks-list-head-row">
+          <div class="tasks-col-status">Source</div>
+          <div class="tasks-col-goal">Topic / Title</div>
+          <div style="flex:1.5;min-width:0;padding:0 12px">Content Preview</div>
+          <div class="tasks-col-time">Updated</div>
+          <div class="tasks-col-action" style="width:70px;justify-content:flex-end">Actions</div>
+        </div>
+
+        <div class="tasks-items-list">
+          ${
+            entries.length
+              ? entries
+                  .map((e) => {
+                    const preview = e.content.length > 140 ? `${e.content.slice(0, 140)}…` : e.content;
+                    return `
+              <div class="task-list-row memory-row" data-open-memory="${e.id}">
+                <div class="tasks-col-status">
+                  <span class="owner-badge ${e.owner}" style="margin:0">${e.owner === "agent" ? "Agent" : "Manual"}</span>
+                </div>
+                <div class="tasks-col-goal">
+                  <span class="task-row-goal-text">${escapeHtml(e.title)}</span>
+                </div>
+                <div style="flex:1.5;min-width:0;padding:0 12px;overflow:hidden">
+                  <span class="task-row-summary-text" style="margin-top:0">${escapeHtml(preview || "—")}</span>
+                </div>
+                <div class="tasks-col-time">
+                  <span class="task-time-text">${formatRelativeTime(e.updatedAt)}</span>
+                </div>
+                <div class="tasks-col-action" style="width:70px;gap:6px;justify-content:flex-end">
+                  <button type="button" class="row-icon-btn row-delete-btn" data-delete-memory="${e.id}" aria-label="Delete">${icon("trash-2")}</button>
+                  <span class="task-open-arrow">${icon("chevron-right")}</span>
+                </div>
+              </div>
+            `;
+                  })
+                  .join("")
+              : `
+              <div class="tasks-empty-state">
+                <div class="tasks-empty-icon">${icon("lightbulb")}</div>
+                <div class="tasks-empty-title">${q ? "No matching knowledge entries" : "No memories stored yet"}</div>
+                <p class="tasks-empty-text">${q ? "Try searching for a different phrase or keyword." : "Add facts, business preferences, or guidance manually, or ask agents to remember them in chat."}</p>
+              </div>
+            `
+          }
+        </div>
       </div>
-      ${
-        entries.length
-          ? entries
-              .map((e) => {
-                const preview = e.content.length > 160 ? `${e.content.slice(0, 160)}…` : e.content;
-                return `
-            <div class="stub-list-row memory-card" data-open-memory="${e.id}" style="cursor:pointer;align-items:flex-start">
-              <span class="memory-card-body">
-                <span class="stub-list-title" style="display:block">${escapeHtml(e.title)} <span class="owner-badge ${e.owner}">${e.owner === "agent" ? "Memory chat" : "Manual"}</span></span>
-                <span class="memory-card-preview">${escapeHtml(preview)}</span>
-                <span class="stub-list-meta">Updated ${formatRelativeTime(e.updatedAt)}</span>
-              </span>
-              <button type="button" class="row-icon-btn row-delete-btn" data-delete-memory="${e.id}" aria-label="Delete">${icon("trash-2")}</button>
-            </div>
-          `;
-              })
-              .join("")
-          : `<div class="stub-placeholder">${q ? "No matches." : "Nothing stored in memory yet."}</div>`
-      }
     </div>
   `;
 }
@@ -83,26 +140,37 @@ function renderMemoryList() {
 function renderMemoryDetail(entry) {
   const previewMode = state.memoryBrowse.previewMode !== "edit";
   return `
-    <button type="button" class="card-link chat-back" id="memory-back-btn">${icon("chevron-left")} Back to Knowledge</button>
-    <div class="card">
-      <input type="text" class="note-title-input" id="memory-title-input" value="${escapeHtml(entry.title)}" />
-      <div class="toolbar" style="margin:10px 0">
-        <button type="button" class="page-tab${previewMode ? " active" : ""}" data-memory-mode="preview">Preview</button>
-        <button type="button" class="page-tab${!previewMode ? " active" : ""}" data-memory-mode="edit">Edit</button>
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="btn-secondary" id="memory-save-btn">Save</button>
-        <button type="button" class="row-icon-btn row-delete-btn" id="memory-delete-btn" aria-label="Delete">${icon("trash-2")}</button>
+    <div class="tasks-page knowledge-page">
+      <div style="margin-bottom:8px">
+        <button type="button" class="card-link chat-back" id="memory-back-btn">${icon("chevron-left")} Back to Knowledge</button>
       </div>
-      ${
-        previewMode
-          ? `<div class="chat-msg-text">${renderMarkdown(entry.content || "*Empty*")}</div>`
-          : `<textarea id="memory-content-input" rows="14" style="width:100%">${escapeHtml(entry.content || "")}</textarea>`
-      }
+      <div class="tasks-list-card" style="padding:24px">
+        <input type="text" class="note-title-input" id="memory-title-input" value="${escapeHtml(entry.title)}" style="font-size:20px;font-weight:700;margin-bottom:12px" />
+        <div class="tasks-toolbar" style="margin-bottom:16px;border-radius:12px;border:1px solid rgba(0,0,0,0.06)">
+          <div class="page-tabs" style="margin:0">
+            <button type="button" class="page-tab${previewMode ? " active" : ""}" data-memory-mode="preview">Preview</button>
+            <button type="button" class="page-tab${!previewMode ? " active" : ""}" data-memory-mode="edit">Edit</button>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button type="button" class="btn-primary" id="memory-save-btn">Save changes</button>
+            <button type="button" class="row-icon-btn row-delete-btn" id="memory-delete-btn" aria-label="Delete">${icon("trash-2")}</button>
+          </div>
+        </div>
+        ${
+          previewMode
+            ? `<div class="chat-msg-text" style="padding:14px;background:rgba(255,255,255,0.4);border-radius:12px;border:1px solid rgba(0,0,0,0.04)">${renderMarkdown(entry.content || "*Empty*")}</div>`
+            : `<textarea id="memory-content-input" rows="14" style="width:100%;border-radius:12px;padding:14px;border:1px solid rgba(0,0,0,0.08);background:rgba(255,255,255,0.7);color:var(--text);font-family:inherit;font-size:13px">${escapeHtml(entry.content || "")}</textarea>`
+        }
+      </div>
     </div>
   `;
 }
 
 VIEW_ATTACHERS.push(function attachMemoryHandlers() {
+  document.getElementById("memory-search-clear")?.addEventListener("click", () => {
+    state.memoryBrowse.search = "";
+    render();
+  });
   document.getElementById("memory-search")?.addEventListener("input", (e) => {
     const cursor = e.target.selectionStart;
     state.memoryBrowse.search = e.target.value;

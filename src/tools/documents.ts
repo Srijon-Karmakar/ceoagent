@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { getWorkspaceDir } from "../workspace.js";
 import { defineTool, type ToolDef } from "../providers/toolAdapter.js";
@@ -56,9 +56,30 @@ async function loadIndexAsync(): Promise<DocumentRecord[]> {
   }
 }
 
+// Temp file + rename, so a crash mid-write can't leave a truncated index.
 async function saveIndexAsync(docs: DocumentRecord[]) {
   await mkdir(docsDir(), { recursive: true });
-  await writeFile(indexFile(), JSON.stringify(docs, null, 2));
+  const file = indexFile();
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify(docs, null, 2));
+  await rename(tmp, file);
+}
+
+// Read-modify-write on the index is serialized per file: two runs saving a
+// document at the same moment would otherwise both read the old index and
+// the second save would drop the first one's document.
+const indexLocks = new Map<string, Promise<unknown>>();
+
+function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const file = indexFile();
+  const prev = indexLocks.get(file) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  const settled = next.catch(() => undefined);
+  indexLocks.set(file, settled);
+  settled.then(() => {
+    if (indexLocks.get(file) === settled) indexLocks.delete(file);
+  });
+  return next;
 }
 
 export function listDocuments(agentKey?: string): DocumentRecord[] {
@@ -72,18 +93,20 @@ export function getDocument(id: string): DocumentRecord | undefined {
   return loadIndexSync().find((d) => d.id === id);
 }
 
-async function addDocument(agentKey: string, title: string, content: string): Promise<DocumentRecord> {
-  const docs = await loadIndexAsync();
-  const record: DocumentRecord = {
-    id: randomUUID(),
-    title,
-    agentKey,
-    createdAt: new Date().toISOString(),
-    content,
-  };
-  docs.push(record);
-  await saveIndexAsync(docs);
-  return record;
+function addDocument(agentKey: string, title: string, content: string): Promise<DocumentRecord> {
+  return withIndexLock(async () => {
+    const docs = await loadIndexAsync();
+    const record: DocumentRecord = {
+      id: randomUUID(),
+      title,
+      agentKey,
+      createdAt: new Date().toISOString(),
+      content,
+    };
+    docs.push(record);
+    await saveIndexAsync(docs);
+    return record;
+  });
 }
 
 export interface DocumentAgentMeta {

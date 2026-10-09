@@ -21,6 +21,7 @@ const state = {
   attachments: [], // { filename, text, truncated, path? }[] — parsed files pending on the goal form; path is set for .html/.htm uploads (workspace-relative, for import_email_template_from_file)
   attaching: false, // true while an upload (or batch of uploads) is being parsed server-side
   attachError: null, // error message from the most recent failed upload(s), cleared on next attempt
+  replyDraft: "", // in-progress #reply-input text for the selected run — render() fires on every SSE event, which would otherwise wipe it mid-type
   goalDrafts: {}, // goalDraftKey(view) -> in-progress #goal-input text, kept per-view so switching tabs (which re-renders the composer) doesn't lose what you were typing
   selectedModel: "auto", // "auto" | "claude" | "codex" | "openai" | "deepseek" | "ollama" — model-picker dropdown on the goal composer; "auto" is today's Claude->Codex->OpenAI->DeepSeek->Ollama cascade, anything else pins to that one model with no fallback
   modelPickerOpen: false, // whether the model-picker's popover menu (triggered by the cpu icon button) is currently showing
@@ -1267,6 +1268,7 @@ async function selectRun(id) {
     eventSource.close();
     eventSource = null;
   }
+  if (state.selectedRunId !== id) state.replyDraft = "";
   state.selectedRunId = id;
   state.sidebarOpen = false;
   state.logNearBottom = true;
@@ -1464,6 +1466,7 @@ async function sendReply(id, message) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
   });
+  state.replyDraft = "";
 
   if (eventSource) {
     eventSource.close();
@@ -2865,7 +2868,7 @@ function renderRunDetail() {
 function renderReplyForm() {
   return `
     <form id="reply-form" class="reply-form">
-      <textarea id="reply-input" placeholder="Reply to continue this conversation…" rows="1" required></textarea>
+      <textarea id="reply-input" placeholder="Reply to continue this conversation…" rows="1" required>${escapeHtml(state.replyDraft)}</textarea>
       <button type="submit" id="reply-submit-btn" class="reply-submit" aria-label="Send reply">
         <i data-lucide="corner-down-left"></i>
       </button>
@@ -6395,6 +6398,11 @@ function attachHandlers() {
       } finally {
         btn.disabled = false;
       }
+    });
+    // Mirrored into state (no render()) so the per-token SSE re-renders
+    // while a run streams don't wipe what's being typed.
+    document.getElementById("reply-input")?.addEventListener("input", (e) => {
+      state.replyDraft = e.target.value;
     });
     document.getElementById("reply-input")?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {

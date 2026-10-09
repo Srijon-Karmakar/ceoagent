@@ -3,6 +3,7 @@ import { Codex, type Thread, type ThreadEvent, type ThreadOptions, type Usage } 
 import { getEnvValue } from "../server/settings.js";
 import { getTenantContext } from "../paths.js";
 import { getWorkspaceDir } from "../workspace.js";
+import { minimalSubprocessEnv } from "../agentSandbox.js";
 import { DEPARTMENTS, buildAgentsRegistry } from "../agents.js";
 import { DEVELOPER_INFO_BLOCK } from "../developer/index.js";
 import { extractLinearTask, type RunEvent, type RunSource, type LinearTaskRef } from "../orchestrator.js";
@@ -93,7 +94,9 @@ function buildCodexClient(bridgeToken: string): Codex {
   const apiKey = resolveApiKey();
   return new Codex({
     ...(apiKey ? { apiKey } : {}),
-    env: { ...process.env, CEO_AGENT_MCP_TOKEN: bridgeToken } as Record<string, string>,
+    // Not process.env: Codex runs shell commands, and the server env holds
+    // every operator secret. Its tools reach this app via the MCP bridge.
+    env: minimalSubprocessEnv({ CEO_AGENT_MCP_TOKEN: bridgeToken }),
     config: {
       mcp_servers: {
         ceo_tools: { url: bridgeUrl(), bearer_token_env_var: "CEO_AGENT_MCP_TOKEN" },

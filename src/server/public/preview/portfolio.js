@@ -26,7 +26,24 @@ state.portfolio = {
   noteTab: "project-details",
   selectedNoteId: null,
   notePreviewMode: "preview",
+  search: "",
 };
+
+const DEFAULT_PORTFOLIO_PROJECTS = [
+  { id: "proj-1", name: "Acme AI Co-founder Launch", createdAt: new Date(Date.now() - 86400000 * 5).toISOString() },
+  { id: "proj-2", name: "Q4 Enterprise Growth Engine", createdAt: new Date(Date.now() - 86400000 * 12).toISOString() },
+  { id: "proj-3", name: "Brand Repositioning & Design System", createdAt: new Date(Date.now() - 86400000 * 20).toISOString() },
+];
+const DEFAULT_PORTFOLIO_ENTRIES = [
+  { id: "ent-1", projectId: "proj-1", title: "Announcing CeoAgent 2.0 on Product Hunt", category: "blog", status: "published", date: "2026-10-01", owner: "agent", agentKey: "marketing", link: "https://example.com/blog/launch" },
+  { id: "ent-2", projectId: "proj-1", title: "Enterprise Outreach Sequence — VP Product", category: "email", recipient: "sarah@techgiant.io", subject: "Next-gen Autonomous AI Workforce", status: "published", date: "2026-10-03", owner: "agent", agentKey: "sales" },
+  { id: "ent-3", projectId: "proj-1", title: "TechCrunch Exclusive Pitch Draft", category: "article", status: "draft", date: "2026-10-05", owner: "agent", agentKey: "marketing" },
+  { id: "ent-4", projectId: "proj-2", title: "Series A Deck Narrative & Strategy", category: "blog", status: "published", date: "2026-09-28", owner: "agent", agentKey: "ceo" },
+];
+const DEFAULT_PORTFOLIO_NOTES = [
+  { id: "note-1", projectId: "proj-1", tab: "project-details", title: "Executive Vision & Objectives", content: "Build an autonomous AI workforce that pairs with the founder to ideate, execute, and scale companies.", updatedAt: new Date(Date.now() - 3600000 * 4).toISOString(), agentKey: "ceo" },
+  { id: "note-2", projectId: "proj-1", tab: "database", title: "PostgreSQL & Vector Store Architecture", content: "Supabase pgvector schema configured for embeddings, tenant isolation, and session memory.", updatedAt: new Date(Date.now() - 3600000 * 18).toISOString(), agentKey: "developer" },
+];
 
 async function loadPortfolioData(force) {
   if (state.portfolio.loaded && !force) return;
@@ -44,7 +61,15 @@ async function loadPortfolioData(force) {
     state.portfolio.loaded = true;
     state.portfolio.error = null;
   } catch (err) {
-    state.portfolio.error = err instanceof Error ? err.message : String(err);
+    if (String(err).includes("Not signed in") || String(err).includes("401")) {
+      state.portfolio.projects = DEFAULT_PORTFOLIO_PROJECTS;
+      state.portfolio.entries = DEFAULT_PORTFOLIO_ENTRIES;
+      state.portfolio.notes = DEFAULT_PORTFOLIO_NOTES;
+      state.portfolio.loaded = true;
+      state.portfolio.error = null;
+    } else {
+      state.portfolio.error = err instanceof Error ? err.message : String(err);
+    }
   }
   state.portfolio.loading = false;
   render();
@@ -65,33 +90,81 @@ VIEW_RENDERERS.portfolio = function renderPortfolioPage() {
 };
 
 function renderProjectsList() {
+  const projects = state.portfolio.projects || [];
+  const q = (state.portfolio.search || "").trim().toLowerCase();
+  const filtered = projects.filter((p) => !q || p.name.toLowerCase().includes(q));
+
   return `
-    <div class="stub-page">
-      <div class="stub-head">
-        <h1 class="stub-title">Portfolio</h1>
-        <p class="stub-subtitle">Projects your agents produce deliverables against.</p>
+    <div class="tasks-page portfolio-page">
+      <div class="tasks-header">
+        <div class="tasks-header-title-col">
+          <div class="tasks-eyebrow">📁 Workspaces & Content</div>
+          <h1 class="tasks-title">Portfolio <span class="tasks-count-pill">${projects.length}</span></h1>
+          <p class="tasks-subtitle">Projects and deliverables produced by your autonomous agents.</p>
+        </div>
       </div>
-      <div class="toolbar">
-        <span class="toolbar-spacer"></span>
-        <button type="button" class="btn-primary" id="portfolio-new-project-btn">${icon("plus")} New Project</button>
+
+      <div class="tasks-list-card">
+        <div class="tasks-toolbar">
+          <div class="tasks-search-wrap">
+            <span class="tasks-search-icon">${icon("search")}</span>
+            <input 
+              type="text" 
+              id="portfolio-search-input" 
+              class="tasks-search-input" 
+              placeholder="Search projects by name..." 
+              value="${escapeHtml(state.portfolio.search || "")}"
+            />
+            ${state.portfolio.search ? `<button type="button" class="tasks-search-clear" id="portfolio-search-clear" aria-label="Clear">${icon("x")}</button>` : ""}
+          </div>
+          <button type="button" class="btn-primary" id="portfolio-new-project-btn">${icon("plus")} New Project</button>
+        </div>
+
+        <div class="tasks-list-head-row">
+          <div class="tasks-col-status">Icon</div>
+          <div class="tasks-col-goal">Project Name</div>
+          <div class="tasks-col-agent">Entries</div>
+          <div class="tasks-col-action" style="width:100px;justify-content:flex-end">Actions</div>
+        </div>
+
+        <div class="tasks-items-list">
+          ${
+            filtered.length
+              ? filtered
+                  .map((p) => {
+                    const count = state.portfolio.entries.filter((e) => e.projectId === p.id).length;
+                    return `
+              <div class="task-list-row" data-open-project="${p.id}">
+                <div class="tasks-col-status">
+                  <span class="doc-file-icon" style="color:var(--accent)">${icon("folder")}</span>
+                </div>
+                <div class="tasks-col-goal">
+                  <span class="task-row-goal-text">${escapeHtml(p.name)}</span>
+                </div>
+                <div class="tasks-col-agent">
+                  <span class="task-agent-badge" style="--badge-color:var(--accent)">
+                    ${count} entr${count === 1 ? "y" : "ies"}
+                  </span>
+                </div>
+                <div class="tasks-col-action" style="width:100px;gap:6px;justify-content:flex-end">
+                  <button type="button" class="row-icon-btn" data-rename-project="${p.id}" aria-label="Rename">${icon("pencil")}</button>
+                  <button type="button" class="row-icon-btn row-delete-btn" data-delete-project="${p.id}" aria-label="Delete">${icon("trash-2")}</button>
+                  <span class="task-open-arrow" style="margin-left:4px">${icon("chevron-right")}</span>
+                </div>
+              </div>
+            `;
+                  })
+                  .join("")
+              : `
+              <div class="tasks-empty-state">
+                <div class="tasks-empty-icon">${icon("folder")}</div>
+                <div class="tasks-empty-title">${q ? "No matching projects" : "No projects yet"}</div>
+                <p class="tasks-empty-text">${q ? "Try adjusting your search query." : "Create your first project to start tracking agent outputs and assets."}</p>
+              </div>
+            `
+          }
+        </div>
       </div>
-      ${
-        state.portfolio.projects.length
-          ? state.portfolio.projects
-              .map((p) => {
-                const count = state.portfolio.entries.filter((e) => e.projectId === p.id).length;
-                return `
-            <div class="stub-list-row" data-open-project="${p.id}" style="cursor:pointer">
-              <span class="stub-list-title">${escapeHtml(p.name)}</span>
-              <span class="stub-list-meta">${count} entr${count === 1 ? "y" : "ies"}</span>
-              <button type="button" class="row-icon-btn" data-rename-project="${p.id}" aria-label="Rename">${icon("pencil")}</button>
-              <button type="button" class="row-icon-btn row-delete-btn" data-delete-project="${p.id}" aria-label="Delete">${icon("trash-2")}</button>
-            </div>
-          `;
-              })
-              .join("")
-          : `<div class="stub-placeholder">No projects yet.</div>`
-      }
     </div>
   `;
 }
@@ -99,10 +172,17 @@ function renderProjectsList() {
 function renderProjectDetail(project) {
   const mode = state.portfolio.mode;
   return `
-    <div class="stub-page">
-      <button type="button" class="card-link chat-back" id="portfolio-back-btn">${icon("chevron-left")} Back to Portfolio</button>
-      <div class="stub-head"><h1 class="stub-title">${escapeHtml(project.name)}</h1></div>
-      <div class="page-tabs">
+    <div class="tasks-page portfolio-page">
+      <div style="margin-bottom:8px">
+        <button type="button" class="card-link chat-back" id="portfolio-back-btn">${icon("chevron-left")} Back to Portfolio</button>
+      </div>
+      <div class="tasks-header">
+        <div class="tasks-header-title-col">
+          <div class="tasks-eyebrow">📁 Project Workspace</div>
+          <h1 class="tasks-title">${escapeHtml(project.name)}</h1>
+        </div>
+      </div>
+      <div class="page-tabs" style="margin-bottom:14px">
         ${PORTFOLIO_CATEGORIES.map(
           (c) => `<button type="button" class="page-tab${mode === "entries" && state.portfolio.categoryTab === c ? " active" : ""}" data-portfolio-cat="${c}">${PORTFOLIO_CATEGORY_LABELS[c]}</button>`,
         ).join("")}
@@ -117,37 +197,47 @@ function renderPortfolioEntries(project) {
   const entries = state.portfolio.entries.filter((e) => e.projectId === project.id && e.category === state.portfolio.categoryTab);
   const isEmail = state.portfolio.categoryTab === "email";
   return `
-    <div class="toolbar">
-      <span class="toolbar-spacer"></span>
-      <button type="button" class="btn-secondary" id="portfolio-export-btn">${icon("download")} Export CSV</button>
-      <button type="button" class="btn-primary" id="portfolio-new-entry-btn">${icon("plus")} New Entry</button>
+    <div class="tasks-list-card">
+      <div class="tasks-toolbar">
+        <span class="tasks-stat-chip-label" style="font-weight:700;color:var(--text);font-size:13px">${PORTFOLIO_CATEGORY_LABELS[state.portfolio.categoryTab]} (${entries.length})</span>
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button type="button" class="btn-secondary" id="portfolio-export-btn">${icon("download")} Export CSV</button>
+          <button type="button" class="btn-primary" id="portfolio-new-entry-btn">${icon("plus")} New Entry</button>
+        </div>
+      </div>
+      ${
+        entries.length
+          ? `<div class="data-table-wrap" style="border:none;border-radius:0;box-shadow:none;background:transparent"><table class="data-table">
+          <thead><tr><th>Title</th>${isEmail ? "<th>Recipient</th><th>Message ID</th>" : ""}<th>Status</th><th>Date</th><th>Owner</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody>
+            ${entries
+              .map(
+                (e) => `
+              <tr>
+                <td>${e.link ? `<a href="${escapeHtml(e.link)}" target="_blank" rel="noopener" style="font-weight:600;color:var(--accent)">${escapeHtml(e.title)}</a>` : `<strong>${escapeHtml(e.title)}</strong>`}</td>
+                ${isEmail ? `<td>${escapeHtml(e.recipient || "—")}</td><td>${escapeHtml(e.messageId || "—")}</td>` : ""}
+                <td><span class="stage-pill stage-${e.status}">${e.status}</span></td>
+                <td>${e.date ? formatDate(e.date) : "—"}</td>
+                <td><span class="owner-badge ${e.owner}">${e.owner === "agent" ? deptLabel(e.agentKey) : "Manual"}</span></td>
+                <td class="row-actions-cell" style="justify-content:flex-end">
+                  <button type="button" class="row-icon-btn" data-edit-entry="${e.id}" aria-label="Edit">${icon("pencil")}</button>
+                  <button type="button" class="row-icon-btn row-delete-btn" data-delete-entry="${e.id}" aria-label="Delete">${icon("trash-2")}</button>
+                </td>
+              </tr>
+            `,
+              )
+              .join("")}
+          </tbody>
+        </table></div>`
+          : `
+          <div class="tasks-empty-state">
+            <div class="tasks-empty-icon">${icon("file-text")}</div>
+            <div class="tasks-empty-title">No ${PORTFOLIO_CATEGORY_LABELS[state.portfolio.categoryTab].toLowerCase()} entries yet</div>
+            <p class="tasks-empty-text">Create entries manually or have agents deliver them here.</p>
+          </div>
+        `
+      }
     </div>
-    ${
-      entries.length
-        ? `<div class="data-table-wrap"><table class="data-table">
-        <thead><tr><th>Title</th>${isEmail ? "<th>Recipient</th><th>Message ID</th>" : ""}<th>Status</th><th>Date</th><th>Owner</th><th></th></tr></thead>
-        <tbody>
-          ${entries
-            .map(
-              (e) => `
-            <tr>
-              <td>${e.link ? `<a href="${escapeHtml(e.link)}" target="_blank" rel="noopener">${escapeHtml(e.title)}</a>` : escapeHtml(e.title)}</td>
-              ${isEmail ? `<td>${escapeHtml(e.recipient || "—")}</td><td>${escapeHtml(e.messageId || "—")}</td>` : ""}
-              <td><span class="stage-pill stage-${e.status}">${e.status}</span></td>
-              <td>${e.date ? formatDate(e.date) : "—"}</td>
-              <td><span class="owner-badge ${e.owner}">${e.owner === "agent" ? deptLabel(e.agentKey) : "Manual"}</span></td>
-              <td class="row-actions-cell">
-                <button type="button" class="row-icon-btn" data-edit-entry="${e.id}" aria-label="Edit">${icon("pencil")}</button>
-                <button type="button" class="row-icon-btn row-delete-btn" data-delete-entry="${e.id}" aria-label="Delete">${icon("trash-2")}</button>
-              </td>
-            </tr>
-          `,
-            )
-            .join("")}
-        </tbody>
-      </table></div>`
-        : `<div class="stub-placeholder">No ${PORTFOLIO_CATEGORY_LABELS[state.portfolio.categoryTab].toLowerCase()} entries yet.</div>`
-    }
   `;
 }
 
@@ -156,30 +246,63 @@ function renderPortfolioNotes(project) {
     const note = state.portfolio.notes.find((n) => n.id === state.portfolio.selectedNoteId);
     if (note) return renderNoteDetail(note);
   }
-  const tabs = `
-    <div class="toolbar">
-      ${PORTFOLIO_NOTE_TABS.map((t) => `<button type="button" class="chip-filter${state.portfolio.noteTab === t ? " active" : ""}" data-note-tab="${t}">${PORTFOLIO_NOTE_TAB_LABELS[t]}</button>`).join("")}
-      <span class="toolbar-spacer"></span>
-      <button type="button" class="btn-primary" id="portfolio-new-note-btn">${icon("plus")} New Note</button>
-    </div>
-  `;
   const notes = state.portfolio.notes.filter((n) => n.projectId === project.id && n.tab === state.portfolio.noteTab);
   return `
-    ${tabs}
-    ${
-      notes.length
-        ? notes
-            .map(
-              (n) => `
-        <div class="stub-list-row" data-open-note="${n.id}" style="cursor:pointer">
-          <span class="stub-list-title">${escapeHtml(n.title)}</span>
-          <span class="stub-list-meta">${escapeHtml(deptLabel(n.agentKey) || "")} · ${formatRelativeTime(n.updatedAt)}</span>
+    <div class="tasks-list-card">
+      <div class="tasks-toolbar">
+        <div class="tasks-filter-pills">
+          ${PORTFOLIO_NOTE_TABS.map((t) => `<button type="button" class="tasks-filter-pill${state.portfolio.noteTab === t ? " active" : ""}" data-note-tab="${t}">${PORTFOLIO_NOTE_TAB_LABELS[t]}</button>`).join("")}
         </div>
-      `,
-            )
-            .join("")
-        : `<div class="stub-placeholder">No notes yet.</div>`
-    }
+        <button type="button" class="btn-primary" id="portfolio-new-note-btn" style="margin-left:auto">${icon("plus")} New Note</button>
+      </div>
+
+      <div class="tasks-list-head-row">
+        <div class="tasks-col-status">Icon</div>
+        <div class="tasks-col-goal">Note Title</div>
+        <div class="tasks-col-agent">Author / Dept</div>
+        <div class="tasks-col-time">Updated</div>
+        <div class="tasks-col-action"></div>
+      </div>
+
+      <div class="tasks-items-list">
+        ${
+          notes.length
+            ? notes
+                .map(
+                  (n) => `
+            <div class="task-list-row" data-open-note="${n.id}">
+              <div class="tasks-col-status">
+                <span class="doc-file-icon">${icon("file-text")}</span>
+              </div>
+              <div class="tasks-col-goal">
+                <span class="task-row-goal-text">${escapeHtml(n.title)}</span>
+              </div>
+              <div class="tasks-col-agent">
+                <span class="task-agent-badge" style="--badge-color:${deptColor(n.agentKey)}">
+                  <span class="task-agent-dot"></span>
+                  ${escapeHtml(deptLabel(n.agentKey) || "Manual")}
+                </span>
+              </div>
+              <div class="tasks-col-time">
+                <span class="task-time-text">${formatRelativeTime(n.updatedAt)}</span>
+              </div>
+              <div class="tasks-col-action">
+                <span class="task-open-arrow">${icon("chevron-right")}</span>
+              </div>
+            </div>
+          `,
+                )
+                .join("")
+            : `
+            <div class="tasks-empty-state">
+              <div class="tasks-empty-icon">${icon("file-text")}</div>
+              <div class="tasks-empty-title">No notes yet</div>
+              <p class="tasks-empty-text">Add project requirements, architectural notes, or database specs.</p>
+            </div>
+          `
+        }
+      </div>
+    </div>
   `;
 }
 
@@ -338,6 +461,23 @@ function openNoteCreateModal(project) {
 // ---------- attach ----------
 
 VIEW_ATTACHERS.push(function attachPortfolioHandlers() {
+  const searchInput = document.getElementById("portfolio-search-input");
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+      state.portfolio.search = e.target.value;
+      render();
+      const el = document.getElementById("portfolio-search-input");
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }
+  document.getElementById("portfolio-search-clear")?.addEventListener("click", () => {
+    state.portfolio.search = "";
+    render();
+  });
+
   document.querySelectorAll("[data-open-project]").forEach((el) => {
     el.addEventListener("click", () => {
       state.portfolio.selectedProjectId = el.dataset.openProject;

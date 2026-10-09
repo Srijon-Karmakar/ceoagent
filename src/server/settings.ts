@@ -50,6 +50,7 @@ const FIELDS: FieldMeta[] = [
   { envVar: "WHATSAPP_PHONE_NUMBER_ID", label: "WhatsApp phone number ID", group: "WhatsApp" },
   { envVar: "WHATSAPP_BUSINESS_ACCOUNT_ID", label: "WhatsApp business account ID", group: "WhatsApp" },
   { envVar: "WHATSAPP_WEBHOOK_VERIFY_TOKEN", label: "WhatsApp webhook verify token", group: "WhatsApp" },
+  { envVar: "WHATSAPP_APP_SECRET", label: "Meta app secret of the WhatsApp app (verifies inbound webhook signatures — required for auto-reply)", group: "WhatsApp" },
   { envVar: "WHATSAPP_AGENT_OPENAI_MODEL", label: "WhatsApp agent OpenAI model", group: "WhatsApp AI" },
   { envVar: "WHATSAPP_AGENT_KNOWLEDGE_FILES", label: "WhatsApp agent knowledge files (; separated)", group: "WhatsApp AI" },
   { envVar: "WHATSAPP_HANDOFF_EMAIL", label: "WhatsApp handoff email", group: "WhatsApp AI" },
@@ -63,6 +64,11 @@ const FIELDS: FieldMeta[] = [
   { envVar: "OLLAMA_BASE_URL", label: "Ollama base URL (e.g. http://localhost:11434/v1) — last-resort free fallback, unset = disabled", group: "CEO Agent Fallback" },
   { envVar: "OLLAMA_MODEL", label: "Ollama model (default llama3.1) — must be a tool-calling-capable model you've pulled", group: "CEO Agent Fallback" },
   { envVar: "HUGGINGFACE_API_KEY", label: "Hugging Face API key", group: "Hugging Face" },
+  { envVar: "HIGGSFIELD_API_KEY_ID", label: "Higgsfield API key ID (console.higgsfield.ai — leave blank to use the server's shared key)", group: "Higgsfield" },
+  { envVar: "HIGGSFIELD_API_KEY_SECRET", label: "Higgsfield API key secret", group: "Higgsfield" },
+  { envVar: "HIGGSFIELD_IMAGE_MODEL", label: "Image model path (default higgsfield-ai/soul/standard)", group: "Higgsfield" },
+  { envVar: "HIGGSFIELD_VIDEO_MODEL", label: "Text-to-video model path (default kling-video/v2.5-turbo/pro/text-to-video)", group: "Higgsfield" },
+  { envVar: "HIGGSFIELD_IMAGE_TO_VIDEO_MODEL", label: "Image-to-video model path (default kling-video/v2.5-turbo/pro/image-to-video)", group: "Higgsfield" },
   { envVar: "REDDIT_CLIENT_ID", label: "Reddit client ID", group: "Reddit" },
   { envVar: "REDDIT_CLIENT_SECRET", label: "Reddit client secret", group: "Reddit" },
   { envVar: "REDDIT_USERNAME", label: "Reddit username", group: "Reddit" },
@@ -110,9 +116,68 @@ export function loadSettingsIntoEnv() {
   }
 }
 
+// Settings an org may inherit from the operator's server env when it hasn't
+// set its own: model access (the operator pays), OAuth *app* identities
+// (each org still authorizes its own account — tokens are per-org files),
+// and stateless lookup services. Every other Settings field is an account,
+// identity or destination — Linear workspace, WhatsApp number, Reddit login,
+// SES sender, webhook/n8n targets, the automation key — and must never fall
+// back, or one org's agents would act through (and read from) the
+// operator's accounts. New fields are org-only unless added here.
+const SHARED_WITH_ORGS = new Set([
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "CODEX_API_KEY", "HUGGINGFACE_API_KEY",
+  "CODEX_CEO_MODEL", "OPENAI_CEO_MODEL", "DEEPSEEK_CEO_MODEL", "OLLAMA_BASE_URL", "OLLAMA_MODEL", "WHATSAPP_AGENT_OPENAI_MODEL",
+  "SUPABASE_URL", "SUPABASE_ANON_KEY",
+  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "META_APP_ID", "META_APP_SECRET",
+  "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "FACEBOOK_CLIENT_ID", "FACEBOOK_CLIENT_SECRET",
+  "CANVA_CLIENT_ID", "CANVA_CLIENT_SECRET",
+  "SCRAPEGRAPH_API_KEY", "HUNTER_API_KEY",
+  // Higgsfield: the operator's key is shared, but an org can bring its own
+  // (resolved as a pair — see getCredentialSet).
+  "HIGGSFIELD_API_KEY_ID", "HIGGSFIELD_API_KEY_SECRET",
+  "HIGGSFIELD_IMAGE_MODEL", "HIGGSFIELD_VIDEO_MODEL", "HIGGSFIELD_IMAGE_TO_VIDEO_MODEL",
+]);
+const FIELD_NAMES = new Set(FIELDS.map((f) => f.envVar));
+
+/** Whether an org (tenant) request may fall back to the server env for this var. Non-Settings vars (limits, redirect URIs, PORT...) are server config and always come from env. */
+function inheritsServerValue(envVar: string): boolean {
+  return !FIELD_NAMES.has(envVar) || SHARED_WITH_ORGS.has(envVar);
+}
+
 export function getEnvValue(envVar: string): string | undefined {
-  const tenantValue = getTenantContext() ? readSettingsFile()[envVar] : undefined;
-  return tenantValue || process.env[envVar];
+  if (!getTenantContext()) return process.env[envVar];
+  const tenantValue = readSettingsFile()[envVar];
+  if (tenantValue) return tenantValue;
+  return inheritsServerValue(envVar) ? process.env[envVar] : undefined;
+}
+
+/**
+ * Resolves a multi-part credential (e.g. key ID + secret) as ONE unit. If the
+ * org has set any part itself, every part comes from the org's settings —
+ * never half org, half server, which would pair an org's key ID with the
+ * operator's secret. Otherwise the server's values are used (if shareable).
+ * `source` says whose account will be billed. Undefined if incomplete.
+ */
+export function getCredentialSet(envVars: string[]): { values: Record<string, string>; source: "org" | "server" } | undefined {
+  const pick = (read: (v: string) => string | undefined) => {
+    const values: Record<string, string> = {};
+    for (const v of envVars) {
+      const value = read(v);
+      if (!value) return undefined;
+      values[v] = value;
+    }
+    return values;
+  };
+  if (getTenantContext()) {
+    const own = readSettingsFile();
+    if (envVars.some((v) => own[v])) {
+      const values = pick((v) => own[v]);
+      return values ? { values, source: "org" } : undefined;
+    }
+    if (!envVars.every(inheritsServerValue)) return undefined;
+  }
+  const values = pick((v) => process.env[v]);
+  return values ? { values, source: "server" } : undefined;
 }
 
 function mask(value: string): string {
@@ -129,14 +194,18 @@ export interface MaskedField {
 }
 
 export function getMaskedSettings(): MaskedField[] {
+  const tenantSettings = getTenantContext() ? readSettingsFile() : undefined;
   return FIELDS.map(({ envVar, label, group }) => {
-    const value = getEnvValue(envVar);
+    // An org sees a mask of its own values only — never even a fragment of
+    // the operator's key, just that the server provides one.
+    const own = tenantSettings ? tenantSettings[envVar] : process.env[envVar];
+    const inherited = !own && tenantSettings && inheritsServerValue(envVar) && process.env[envVar];
     return {
       envVar,
       label,
       group,
-      isSet: Boolean(value),
-      masked: value ? mask(value) : null,
+      isSet: Boolean(own || inherited),
+      masked: own ? mask(own) : inherited ? "provided by server" : null,
     };
   });
 }

@@ -17,7 +17,8 @@ import { HUNTER_TOOL_DEFS, isHunterConnected } from "../tools/hunter.js";
 import { CANVA_TOOL_DEFS, isCanvaConnected } from "../tools/canva.js";
 import { WHATSAPP_TOOL_DEFS, isWhatsappConnected } from "../tools/whatsapp.js";
 import { N8N_TOOL_DEFS, isN8nConnected } from "../tools/n8n.js";
-import { IMAGE_GEN_TOOL_DEFS } from "../tools/image-gen.js";
+import { IMAGE_GEN_TOOL_DEFS, isImageGenAvailable } from "../tools/image-gen.js";
+import { VIDEO_GEN_TOOL_DEFS, isHiggsfieldConfigured } from "../tools/higgsfield.js";
 import { POST_IMAGES_TOOL_DEFS } from "../tools/post-images.js";
 import { REDDIT_TOOL_DEFS, isRedditConnected } from "../tools/reddit.js";
 import { documentToolDefs } from "../agents.js";
@@ -72,7 +73,8 @@ export function buildToolDefRegistry(): Map<string, ToolDef> {
     ...(isCanvaConnected() ? [{ server: "canva", defs: CANVA_TOOL_DEFS }] : []),
     ...(isWhatsappConnected() ? [{ server: "whatsapp", defs: WHATSAPP_TOOL_DEFS }] : []),
     ...(isN8nConnected() ? [{ server: "n8n", defs: N8N_TOOL_DEFS }] : []),
-    ...(isZernioConnected() ? [{ server: "image_gen", defs: IMAGE_GEN_TOOL_DEFS }] : []),
+    ...(isImageGenAvailable() ? [{ server: "image_gen", defs: IMAGE_GEN_TOOL_DEFS }] : []),
+    ...(isHiggsfieldConfigured() ? [{ server: "video_gen", defs: VIDEO_GEN_TOOL_DEFS }] : []),
     ...(isZernioConnected() ? [{ server: "post_images", defs: POST_IMAGES_TOOL_DEFS }] : []),
     ...(isRedditConnected() ? [{ server: "reddit", defs: REDDIT_TOOL_DEFS }] : []),
   ];

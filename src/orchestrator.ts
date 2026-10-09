@@ -12,7 +12,8 @@ import { hunterServer, HUNTER_TOOLS, isHunterConnected } from "./tools/hunter.js
 import { canvaServer, CANVA_TOOLS, isCanvaConnected } from "./tools/canva.js";
 import { whatsappServer, WHATSAPP_TOOLS, isWhatsappConnected } from "./tools/whatsapp.js";
 import { n8nServer, N8N_TOOLS, isN8nConnected } from "./tools/n8n.js";
-import { imageGenServer, IMAGE_GEN_TOOLS } from "./tools/image-gen.js";
+import { imageGenServer, IMAGE_GEN_TOOLS, isImageGenAvailable } from "./tools/image-gen.js";
+import { videoGenServer, VIDEO_GEN_TOOLS, isHiggsfieldConfigured } from "./tools/higgsfield.js";
 import { postImagesServer, POST_IMAGES_TOOLS } from "./tools/post-images.js";
 import { schedulerServer } from "./tools/scheduler.js";
 import { redditServer, REDDIT_TOOLS, isRedditConnected } from "./tools/reddit.js";
@@ -23,6 +24,7 @@ import { memoryServer } from "./tools/memory.js";
 import { DEPARTMENTS, buildAgentsRegistry, documentsServer, allSpecialistToolNames } from "./agents.js";
 import { getWorkspaceDir } from "./workspace.js";
 import { DEVELOPER_INFO_BLOCK } from "./developer/index.js";
+import { workspaceGuardHook } from "./agentSandbox.js";
 
 export { getWorkspaceDir };
 
@@ -54,9 +56,13 @@ const forceSynchronousDelegation: HookCallback = async (input) => {
   };
 };
 
-const AGENT_DELEGATION_HOOKS: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {
-  PreToolUse: [{ hooks: [forceSynchronousDelegation] }],
-};
+// Built per run so the workspace guard is bound to this run's tenant
+// workspace (see agentSandbox.ts for why `cwd` alone isn't a sandbox).
+function agentHooks(workspaceDir: string): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+  return {
+    PreToolUse: [{ hooks: [workspaceGuardHook(workspaceDir), forceSynchronousDelegation] }],
+  };
+}
 
 const CEO_SYSTEM_PROMPT = `You are the CEO agent of a small automated organization.
 
@@ -98,7 +104,8 @@ function buildMcpServers() {
     ...(isCanvaConnected() ? { canva: canvaServer } : {}),
     ...(isWhatsappConnected() ? { whatsapp: whatsappServer } : {}),
     ...(isN8nConnected() ? { n8n: n8nServer } : {}),
-    ...(isZernioConnected() ? { image_gen: imageGenServer } : {}),
+    ...(isImageGenAvailable() ? { image_gen: imageGenServer } : {}),
+    ...(isHiggsfieldConfigured() ? { video_gen: videoGenServer } : {}),
     ...(isZernioConnected() ? { post_images: postImagesServer } : {}),
     ...(isRedditConnected() ? { reddit: redditServer } : {}),
   };
@@ -118,7 +125,8 @@ function allToolNames(): string[] {
   if (isCanvaConnected()) for (const t of CANVA_TOOLS) names.add(t);
   if (isWhatsappConnected()) for (const t of WHATSAPP_TOOLS) names.add(t);
   if (isN8nConnected()) for (const t of N8N_TOOLS) names.add(t);
-  if (isZernioConnected()) for (const t of IMAGE_GEN_TOOLS) names.add(t);
+  if (isImageGenAvailable()) for (const t of IMAGE_GEN_TOOLS) names.add(t);
+  if (isHiggsfieldConfigured()) for (const t of VIDEO_GEN_TOOLS) names.add(t);
   if (isZernioConnected()) for (const t of POST_IMAGES_TOOLS) names.add(t);
   if (isRedditConnected()) for (const t of REDDIT_TOOLS) names.add(t);
   return [...names];
@@ -268,25 +276,26 @@ export async function runCeoAgent(
   resumeSessionId?: string,
   abortController?: AbortController,
 ) {
+  const workspaceDir = getWorkspaceDir();
   const stream = query({
     prompt: goal,
     options: {
       systemPrompt: { type: "preset", preset: "claude_code", append: CEO_SYSTEM_PROMPT },
-      cwd: getWorkspaceDir(),
+      cwd: workspaceDir,
       mcpServers: buildMcpServers(),
       agents: buildAgentsRegistry(),
       // `tools` is a session-wide ceiling, not just the CEO's own toolset — it
       // has to include every built-in a subagent might need (Bash, WebSearch,
       // etc.) or delegated work silently loses access to them. The CEO itself
-      // is kept off them by its system prompt, not tool availability; the real
-      // backstop is `cwd: WORKSPACE_DIR` above, which confines any file/shell
-      // access — CEO's own or a subagent's — to a throwaway sandbox, never
-      // this app's own source.
+      // is kept off them by its system prompt, not tool availability. `cwd`
+      // is NOT a sandbox on its own — agentHooks' workspace guard is what
+      // keeps file tools inside it, and Bash is only in this list at all
+      // when ALLOW_AGENT_SHELL=true (see agentSandbox.ts).
       tools: builtinToolNames(),
       allowedTools: allToolNames(),
       permissionMode: "dontAsk",
       maxTurns: 40,
-      hooks: AGENT_DELEGATION_HOOKS,
+      hooks: agentHooks(workspaceDir),
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(abortController ? { abortController } : {}),
     },
@@ -307,18 +316,19 @@ export async function runSpecialistAgent(
   const agent = registry[agentKey];
   if (!agent) throw new Error(`Unknown agent: ${agentKey}`);
 
+  const workspaceDir = getWorkspaceDir();
   const stream = query({
     prompt: goal,
     options: {
       agent: agentKey,
-      cwd: getWorkspaceDir(),
+      cwd: workspaceDir,
       mcpServers: buildMcpServers(),
       agents: registry,
       tools: agent.tools ?? [],
       allowedTools: agent.tools ?? [],
       permissionMode: "dontAsk",
       maxTurns: 40,
-      hooks: AGENT_DELEGATION_HOOKS,
+      hooks: agentHooks(workspaceDir),
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(abortController ? { abortController } : {}),
     },

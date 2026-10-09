@@ -67,10 +67,53 @@ function getStore(): RunStore {
   return store;
 }
 
-function persist() {
+function writeStore(file: string, store: RunStore) {
   const dir = getDataDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeDoc(dataFile(), [...getStore().runs.values()]);
+  writeDoc(file, [...store.runs.values()]);
+}
+
+// runs.json holds every run with its full event log, and a streaming run
+// appends an event per token batch — writing the whole document each time
+// blocked the event loop proportionally to history size. Events are
+// therefore batched: appendEvent schedules one write per org per
+// EVENT_PERSIST_DELAY_MS. Every other mutation (create, finish, archive,
+// delete...) still writes immediately via persist(), which also absorbs any
+// pending batched write. A crash loses at most that window of events.
+const EVENT_PERSIST_DELAY_MS = 500;
+const pendingPersists = new Map<string, { timer: NodeJS.Timeout; store: RunStore; dir: string }>();
+
+function persist() {
+  const file = dataFile();
+  const pending = pendingPersists.get(file);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingPersists.delete(file);
+  }
+  writeStore(file, getStore());
+}
+
+function persistSoon() {
+  const file = dataFile();
+  if (pendingPersists.has(file)) return;
+  const store = getStore();
+  const dir = getDataDir();
+  const timer = setTimeout(() => {
+    pendingPersists.delete(file);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeDoc(file, [...store.runs.values()]);
+  }, EVENT_PERSIST_DELAY_MS);
+  pendingPersists.set(file, { timer, store, dir });
+}
+
+/** Writes any batched run events now. Call before shutdown (ahead of closeStorage). */
+export function flushRunStores() {
+  for (const [file, { timer, store, dir }] of pendingPersists) {
+    clearTimeout(timer);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeDoc(file, [...store.runs.values()]);
+  }
+  pendingPersists.clear();
 }
 
 export function createRun(goal: string, agentKey: string, provider: LlmProviderChoice = "auto"): RunRecord {
@@ -130,7 +173,7 @@ export function appendEvent(id: string, event: RunEvent) {
   const record = runs.get(id);
   if (!record) return;
   record.events.push(event);
-  persist();
+  persistSoon();
   emitters.get(id)?.emit("event", event);
 }
 

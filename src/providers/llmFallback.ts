@@ -10,6 +10,7 @@ import {
   isCodexExhaustionError,
 } from "./exhaustionClassifier.js";
 import { parseSessionId, type FallbackProviderName } from "./sessionStore.js";
+import { isAgentShellAllowed } from "../agentSandbox.js";
 
 export type ProviderName = "claude" | FallbackProviderName;
 /** "auto" = today's cascade behavior; anything else is a manual, no-fallback pin to that one provider. */
@@ -43,8 +44,12 @@ function isExhaustionError(provider: ProviderName, err: unknown): boolean {
 // Codex, like Claude, can work from local CLI login alone — never gated on
 // an explicit key being present the way the plain chat-completion fallbacks
 // below it are (see isFallbackProviderConfigured).
+// Codex's CLI always has a shell that can read outside its workspace, so on
+// servers without ALLOW_AGENT_SHELL it's treated as unavailable (see
+// agentSandbox.ts) — the cascade skips straight to the next provider.
 function isConfigured(provider: ProviderName): boolean {
-  return provider === "claude" || provider === "codex" || isFallbackProviderConfigured(provider);
+  if (provider === "codex") return isAgentShellAllowed();
+  return provider === "claude" || isFallbackProviderConfigured(provider);
 }
 
 interface RunWithFallbackOpts {
@@ -80,6 +85,9 @@ interface RunWithFallbackOpts {
 async function runWithFallback(opts: RunWithFallbackOpts): Promise<FallbackRunResult> {
   if (opts.forcedProvider) {
     if (!isConfigured(opts.forcedProvider)) {
+      if (opts.forcedProvider === "codex") {
+        throw new Error("Codex is disabled on this server (it needs shell access, which ALLOW_AGENT_SHELL turns on for trusted single-user installs).");
+      }
       throw new Error(`${PROVIDER_LABELS[opts.forcedProvider]} is not configured.`);
     }
     return opts.run(opts.forcedProvider, opts.resumeSessionId);

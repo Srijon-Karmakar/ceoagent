@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readDoc, writeDoc, docExists, deleteDoc } from "../storage.js";
 import { join } from "node:path";
 import { getGlobalDataDir, runWithTenant, type TenantContext } from "../paths.js";
+import { getEnvValue } from "./settings.js";
 
 const COOKIE_NAME = "ceo_agent_session";
 const TENANTS_FILE = join(getGlobalDataDir(), "tenants.json");
@@ -54,18 +55,19 @@ export function verifyOAuthStateToken(token: string): TenantContext {
 }
 
 /**
- * Resolves which tenant an /auth/* OAuth request belongs to, without relying
- * on the session cookie (see the OAuth-state-token comment above). Falls
- * back to the cookie when there's no state token, so the flow still works if
- * hit from inside the Electron window itself (e.g. during dev). Returns
- * undefined for single-tenant/no-auth deployments, matching pre-multi-tenant
- * behavior.
+ * Resolves which tenant an /auth/* OAuth request belongs to from the signed
+ * `state` token (see the OAuth-state-token comment above). The token is
+ * required — there's deliberately no fallback to the session cookie: a
+ * cookie-only callback would let an attacker send a victim a link carrying
+ * the attacker's own authorization code and silently connect the attacker's
+ * account to the victim's org (OAuth login CSRF). Returns undefined for
+ * single-tenant/no-auth deployments, matching pre-multi-tenant behavior.
  */
 export async function resolveAuthFlowTenant(req: express.Request): Promise<TenantContext | undefined> {
   if (!isSupabaseAuthConfigured()) return undefined;
   const token = typeof req.query.state === "string" ? req.query.state : "";
-  if (token) return verifyOAuthStateToken(token);
-  return readRequestTenant(req);
+  if (!token) throw new Error("Missing OAuth state — start the connection again from the Accounts screen.");
+  return verifyOAuthStateToken(token);
 }
 
 interface SupabaseUser {
@@ -182,7 +184,38 @@ export function clearSessionCookie(res: express.Response) {
   res.setHeader("Set-Cookie", `${COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
 }
 
+// Every authenticated request (including the UI's 10s poll, which fires
+// several calls at once) would otherwise make a network round trip to
+// Supabase. Verified sessions are cached briefly, keyed by a hash of the
+// token so raw tokens aren't held as map keys. Trade-off: a token revoked
+// at Supabase keeps working here for up to SESSION_CACHE_TTL_MS.
+const SESSION_CACHE_TTL_MS = 60_000;
+const SESSION_CACHE_MAX = 5_000;
+const sessionCache = new Map<string, { user: SupabaseUser; expiresAt: number }>();
+const sessionInflight = new Map<string, Promise<SupabaseUser>>();
+
 async function verifyAccessToken(accessToken: string): Promise<SupabaseUser> {
+  const key = createHash("sha256").update(accessToken).digest("base64url");
+  const cached = sessionCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+  sessionCache.delete(key);
+
+  // Parallel requests with the same token share one Supabase call.
+  let pending = sessionInflight.get(key);
+  if (!pending) {
+    pending = fetchSupabaseUser(accessToken).finally(() => sessionInflight.delete(key));
+    sessionInflight.set(key, pending);
+  }
+  const user = await pending;
+  if (sessionCache.size >= SESSION_CACHE_MAX) {
+    const oldest = sessionCache.keys().next().value;
+    if (oldest !== undefined) sessionCache.delete(oldest);
+  }
+  sessionCache.set(key, { user, expiresAt: Date.now() + SESSION_CACHE_TTL_MS });
+  return user;
+}
+
+async function fetchSupabaseUser(accessToken: string): Promise<SupabaseUser> {
   const url = supabaseUrl();
   const anonKey = supabaseAnonKey();
   if (!url || !anonKey) throw new Error("Supabase auth is not configured");
@@ -252,6 +285,8 @@ declare global {
       // Promise continuation, so Node's async-context propagation doesn't
       // carry it through busboy's stream handling.
       tenant?: TenantContext;
+      /** Exact request bytes, kept for /webhook/* routes so signatures can be verified. */
+      rawBody?: Buffer;
     }
   }
 }
@@ -301,25 +336,33 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
+// Each organization authenticates automation calls with its OWN key, set in
+// that org's Settings (AUTOMATION_API_KEY is org-only — see settings.ts, it
+// never falls back to the server env for an org). A single server-wide key
+// would let anyone holding it act as every organization just by changing
+// the X-Organization-Id header.
 export function requireAutomationTenant(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const configuredKey = process.env.AUTOMATION_API_KEY;
-  if (!configuredKey) {
-    res.status(503).json({ error: "AUTOMATION_API_KEY is not configured on this server" });
-    return;
-  }
-  if (!safeEqual(req.header("X-API-Key") ?? "", configuredKey)) {
-    res.status(401).json({ error: "invalid or missing X-API-Key header" });
-    return;
-  }
   const organizationId = req.header("X-Organization-Id");
   if (!organizationId) {
     res.status(400).json({ error: "X-Organization-Id header is required" });
     return;
   }
   const tenant = findTenantByOrganizationId(organizationId);
+  const presented = req.header("X-API-Key") ?? "";
+  // Same response for "unknown org", "org has no key" and "wrong key", so
+  // the endpoint can't be used to probe which organization IDs exist.
+  const reject = () => res.status(401).json({ error: "invalid X-API-Key or X-Organization-Id" });
   if (!tenant) {
-    res.status(404).json({ error: "unknown organization" });
+    reject();
     return;
   }
-  runWithTenant(tenant, next);
+  runWithTenant(tenant, () => {
+    const configuredKey = getEnvValue("AUTOMATION_API_KEY");
+    if (!configuredKey || !presented || !safeEqual(presented, configuredKey)) {
+      reject();
+      return;
+    }
+    req.tenant = tenant;
+    next();
+  });
 }
